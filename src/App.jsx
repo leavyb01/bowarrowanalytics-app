@@ -2081,6 +2081,11 @@ export default function StandardWorkBoard() {
     (absence) => absence.member_id === memberId && absence.start_date <= dateKey && absence.end_date >= dateKey,
   );
 
+  const absenceForPerson = (name, dateKey) => {
+    const member = teamMembers.find((item) => item.name.trim().toLowerCase() === String(name || "").trim().toLowerCase());
+    return member ? absenceFor(member.id, dateKey) : null;
+  };
+
   const renderTeamPage = () => {
     const days = Array.from({ length: 14 }, (_, index) => {
       const date = dateValue(teamStart);
@@ -3173,6 +3178,7 @@ export default function StandardWorkBoard() {
 
                 {boardLanes.map((lane) => {
                   const roomState = laneMode === "resource" ? getResourceState(lane) : null;
+                  const laneAbsence = laneMode === "person" ? absenceForPerson(lane.id, selectedDate) : null;
                   return (
                   <div key={lane.id} className="grid min-h-[140px]" style={{ gridTemplateColumns: `240px repeat(${HOURS.length}, minmax(58px, 1fr))`, ...boardBorder }}>
                     <div className="flex items-center justify-between gap-3 bg-white p-4" style={boardBorder}>
@@ -3180,6 +3186,11 @@ export default function StandardWorkBoard() {
                         <p className="font-semibold">{getLaneName(lane)}</p>
                         <p className="text-xs text-slate-500">{lane.role || lane.zone}</p>
                       </div>
+                      {laneAbsence && (
+                        <span className={`inline-flex items-center rounded-full px-2.5 py-1 text-[10px] font-semibold ${absenceTypes[laneAbsence.type]?.cell || absenceTypes.other.cell}`}>
+                          {absenceTypes[laneAbsence.type]?.label || "Away"}
+                        </span>
+                      )}
                       {roomState && (
                         <span className={`inline-flex items-center rounded-full border px-2.5 py-1 text-[10px] font-semibold ${roomState.tone}`}>
                           {roomState.label}
@@ -3188,6 +3199,9 @@ export default function StandardWorkBoard() {
                     </div>
 
                     <div className="relative col-span-24 grid" style={{ gridTemplateColumns: `repeat(${HOURS.length}, minmax(58px, 1fr))`, ...boardBorder }}>
+                      {laneAbsence && (
+                        <div className="pointer-events-none absolute inset-0 z-[1] bg-slate-400/20" style={{ backgroundImage: "repeating-linear-gradient(135deg, rgba(100,116,139,0.18) 0 8px, transparent 8px 16px)" }} />
+                      )}
                       {showLiveTimeMarker && (
                         <div
                           className="pointer-events-none absolute inset-y-0 z-10 w-[2px] bg-amber-500/80 shadow-[0_0_0_1px_rgba(255,255,255,0.8)]"
@@ -3306,6 +3320,14 @@ export default function StandardWorkBoard() {
                           onDrop={(event) => handleTaskDrop(event, lane.id, key, 9)}
                         >
                           {isCurrentDay && <span className="absolute inset-y-0 left-0 w-[2px] bg-amber-500" />}
+                          {laneMode === "person" && (() => {
+                            const away = absenceForPerson(lane.id, key);
+                            return away ? (
+                              <span className={`mb-1 inline-block rounded-full px-2 py-0.5 text-[10px] font-semibold ${absenceTypes[away.type]?.cell || absenceTypes.other.cell}`}>
+                                {absenceTypes[away.type]?.label || "Away"}
+                              </span>
+                            ) : null;
+                          })()}
                           <div className="flex min-h-[110px] flex-col gap-1.5">
                             {matches.filter((task) => workTypeFilter === "all" || task.type === workTypeFilter).map((task) => (
                               <button
@@ -3581,7 +3603,7 @@ export default function StandardWorkBoard() {
               <label className="text-sm text-slate-700">Resource<select value={form.resourceId} onChange={(e) => setForm({ ...form, resourceId: e.target.value })} className="mt-1 w-full rounded-lg border p-2.5">{resources.map((resource) => <option key={resource.id} value={resource.id}>{resource.name}</option>)}</select></label>
               <label className="text-sm text-slate-700">Work type<select value={form.type} onChange={(e) => setForm({ ...form, type: e.target.value })} className="mt-1 w-full rounded-lg border p-2.5">{workTypes.map((type) => <option key={type.id} value={type.id}>{type.name}</option>)}</select></label>
               <label className="text-sm sm:col-span-2 text-slate-700">Task<input value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} className="mt-1 w-full rounded-lg border p-2.5" /></label>
-              <label className="text-sm sm:col-span-2 text-slate-700">Assigned person<input value={form.person} onChange={(e) => setForm({ ...form, person: e.target.value })} placeholder="e.g. Maria" className="mt-1 w-full rounded-lg border p-2.5" /></label>
+              <label className="text-sm sm:col-span-2 text-slate-700">Assigned person<input list="team-member-options" value={form.person} onChange={(e) => setForm({ ...form, person: e.target.value })} placeholder="e.g. Maria" className="mt-1 w-full rounded-lg border p-2.5" /><datalist id="team-member-options">{teamMembers.map((member) => <option key={member.id} value={member.name} />)}</datalist></label>
               <label className="text-sm text-slate-700">Start<input type="datetime-local" value={form.start} onChange={(e) => setForm({ ...form, start: e.target.value })} className="mt-1 w-full rounded-lg border p-2.5" /></label>
               <label className="text-sm text-slate-700">End<input type="datetime-local" value={form.end} onChange={(e) => setForm({ ...form, end: e.target.value })} className="mt-1 w-full rounded-lg border p-2.5" /></label>
               <label className="text-sm sm:col-span-2 text-slate-700">Notes<textarea value={form.note} onChange={(e) => setForm({ ...form, note: e.target.value })} rows={3} className="mt-1 w-full rounded-lg border p-2.5" /></label>

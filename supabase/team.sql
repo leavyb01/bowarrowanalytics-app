@@ -55,3 +55,9 @@ create policy "team_absences_select" on public.team_absences
 for select to authenticated using (public.is_org_member(org_id::text));
 create policy "team_absences_write" on public.team_absences
 for all to authenticated using (public.can_manage_team(org_id::text)) with check (public.can_manage_team(org_id::text));
+
+-- Live sync for the team tables
+do $$ begin
+  begin alter publication supabase_realtime add table public.team_members; exception when duplicate_object then null; end;
+  begin alter publication supabase_realtime add table public.team_absences; exception when duplicate_object then null; end;
+end $$;
