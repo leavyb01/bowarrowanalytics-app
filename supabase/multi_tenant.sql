@@ -2,6 +2,41 @@
 -- Run once in the Supabase SQL editor (safe to re-run).
 -- Existing board data is assigned to the organisation whose name or slug contains "kare".
 
+-- 0. Create any configuration tables that the live database does not have yet
+create table if not exists public.organisation_settings (
+  id text primary key default 'default',
+  org_id text not null default 'default',
+  resource_config jsonb not null default '[]'::jsonb,
+  role_cards jsonb not null default '[]'::jsonb,
+  standard_timings jsonb not null default '{"booking": 90, "cleaning": 120, "inspection": 45, "issue": 60, "service": 30}'::jsonb,
+  updated_at timestamptz default now()
+);
+create table if not exists public.role_cards (
+  id text primary key,
+  org_id uuid not null references public.organisations (id) on delete cascade,
+  name text not null,
+  description text,
+  standard_minutes integer not null default 30,
+  color text not null default 'bg-slate-100 text-slate-700',
+  created_at timestamptz default now()
+);
+create table if not exists public.standard_task_timings (
+  id text primary key,
+  org_id uuid not null references public.organisations (id) on delete cascade,
+  work_type text not null,
+  standard_minutes integer not null default 30,
+  created_at timestamptz default now()
+);
+create table if not exists public.business_resources (
+  id text primary key,
+  org_id text not null default 'default',
+  name text not null,
+  zone text,
+  type text,
+  status text default 'Available',
+  created_at timestamptz default now()
+);
+
 -- 1. Organisation column on board data
 alter table public.standard_work_tasks
   add column if not exists org_id uuid references public.organisations (id) on delete cascade;

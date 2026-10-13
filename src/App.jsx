@@ -657,15 +657,24 @@ export default function StandardWorkBoard() {
     }
 
     const loadMemberships = async () => {
-      const { data, error } = await supabase
-        .from("organisation_memberships")
-        .select("org_id, role, status, organisations(id, name, slug)")
-        .eq("user_id", sessionUserId)
-        .eq("status", "active");
+      const [membershipResult, adminResult] = await Promise.all([
+        supabase
+          .from("organisation_memberships")
+          .select("org_id, role, status, organisations(id, name, slug)")
+          .eq("user_id", sessionUserId)
+          .eq("status", "active"),
+        supabase.from("platform_admins").select("user_id").eq("user_id", sessionUserId).maybeSingle(),
+      ]);
 
       if (!isMounted) return;
 
-      const rows = error ? [] : (data || []).filter((row) => row.organisations);
+      let rows = membershipResult.error ? [] : (membershipResult.data || []).filter((row) => row.organisations);
+
+      if (adminResult.data) {
+        const { data: allOrgs } = await supabase.from("organisations").select("id, name, slug").order("name");
+        if (!isMounted) return;
+        rows = (allOrgs || []).map((org) => ({ org_id: org.id, role: "admin", status: "active", organisations: org }));
+      }
       setMemberships(rows);
 
       let stored = null;
