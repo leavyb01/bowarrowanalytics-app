@@ -438,7 +438,17 @@ export default function StandardWorkBoard() {
     [workTypes]
   );
 
+  const taskAbsence = (task) => {
+    if (!task.person || task.status === "completed" || !teamAbsences.length) return null;
+    const startKey = formatDateISO(new Date(task.start));
+    const endKey = formatDateISO(new Date(task.end));
+    const member = teamMembers.find((item) => item.name.trim().toLowerCase() === String(task.person).trim().toLowerCase());
+    if (!member) return null;
+    return teamAbsences.find((absence) => absence.member_id === member.id && absence.start_date <= endKey && absence.end_date >= startKey) || null;
+  };
+
   const taskTypeClass = (task) => {
+    if (taskAbsence(task)) return "bg-rose-200 border-rose-500 text-rose-900 ring-2 ring-rose-500";
     if (task.status === "completed") return styles.completed;
     const configured = workTypes.find((type) => type.id === task.type);
     return colorPalette[configured?.color] || styles[task.type] || styles.booking;
@@ -3468,6 +3478,9 @@ export default function StandardWorkBoard() {
               <p className="flex items-start gap-2"><Wrench size={16} className="mt-0.5" /><span><b>Notes:</b> {selectedTask.note || "No notes"}</span></p>
               {selectedTask.issueReason && (
                 <p className="flex items-start gap-2"><Flag size={16} className="mt-0.5" /><span><b>Issue reason:</b> {selectedTask.issueReason}</span></p>
+              )}
+              {taskAbsence(selectedTask) && (
+                <p className="rounded-lg border border-rose-300 bg-rose-50 p-2 text-rose-800"><b>{selectedTask.person}</b> is booked off ({absenceTypes[taskAbsence(selectedTask).type]?.label || "away"}) during this activity. Reassign it.</p>
               )}
               {selectedTask.delayMinutes > 0 && (
                 <p className="flex items-start gap-2"><Clock3 size={16} className="mt-0.5" /><span><b>Delay logged:</b> {formatMinutes(selectedTask.delayMinutes)}</span></p>
