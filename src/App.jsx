@@ -2160,13 +2160,13 @@ export default function StandardWorkBoard() {
           </div>
 
           <div className="space-y-3">
-            {resourcesConfig.map((resource) => (
-              <div key={resource.id} className="rounded-xl border border-slate-200 bg-slate-50 p-3">
+            {resourcesConfig.map((resource, resourceIndex) => (
+              <div key={resourceIndex} className="rounded-xl border border-slate-200 bg-slate-50 p-3">
                 <div className="mb-3 flex items-center justify-between gap-3">
                   <span className="inline-flex items-center rounded-full bg-emerald-100 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.14em] text-emerald-800">
                     {resource.type || "resource"}
                   </span>
-                  <button type="button" onClick={() => setResourcesConfig((current) => current.filter((item) => item.id !== resource.id))} className="inline-flex items-center gap-1 rounded-lg border border-rose-200 bg-rose-50 px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.12em] text-rose-700 hover:bg-rose-100">
+                  <button type="button" onClick={() => setResourcesConfig((current) => current.filter((_, index) => index !== resourceIndex))} className="inline-flex items-center gap-1 rounded-lg border border-rose-200 bg-rose-50 px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.12em] text-rose-700 hover:bg-rose-100">
                     <Trash2 size={12} /> Delete
                   </button>
                 </div>
@@ -2176,7 +2176,7 @@ export default function StandardWorkBoard() {
                     Resource name
                     <input
                       value={resource.name}
-                      onChange={(event) => setResourcesConfig((current) => current.map((item) => item.id === resource.id ? { ...item, name: event.target.value } : item))}
+                      onChange={(event) => setResourcesConfig((current) => current.map((item, index) => index === resourceIndex ? { ...item, name: event.target.value } : item))}
                       className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700 outline-none focus:border-emerald-700"
                     />
                   </label>
@@ -2185,7 +2185,7 @@ export default function StandardWorkBoard() {
                     Resource id
                     <input
                       value={resource.id}
-                      onChange={(event) => setResourcesConfig((current) => current.map((item) => item.id === resource.id ? { ...item, id: event.target.value } : item))}
+                      onChange={(event) => setResourcesConfig((current) => current.map((item, index) => index === resourceIndex ? { ...item, id: event.target.value } : item))}
                       className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700 outline-none focus:border-emerald-700"
                     />
                   </label>
@@ -2196,7 +2196,7 @@ export default function StandardWorkBoard() {
                     Location
                     <input
                       value={resource.zone}
-                      onChange={(event) => setResourcesConfig((current) => current.map((item) => item.id === resource.id ? { ...item, zone: event.target.value } : item))}
+                      onChange={(event) => setResourcesConfig((current) => current.map((item, index) => index === resourceIndex ? { ...item, zone: event.target.value } : item))}
                       className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700 outline-none focus:border-emerald-700"
                     />
                   </label>
@@ -2205,7 +2205,7 @@ export default function StandardWorkBoard() {
                     Type
                     <select
                       value={resource.type || "resource"}
-                      onChange={(event) => setResourcesConfig((current) => current.map((item) => item.id === resource.id ? { ...item, type: event.target.value } : item))}
+                      onChange={(event) => setResourcesConfig((current) => current.map((item, index) => index === resourceIndex ? { ...item, type: event.target.value } : item))}
                       className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700 outline-none focus:border-emerald-700"
                     >
                       <option value="area">Area</option>
