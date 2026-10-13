@@ -525,7 +525,6 @@ export default function StandardWorkBoard() {
               }
               return [...currentTasks, nextTask];
             });
-            setSyncMessage("Realtime board connected.");
           }
 
           if (payload.eventType === "DELETE") {
