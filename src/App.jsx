@@ -9,6 +9,7 @@ import {
   ChevronRight,
   Clock3,
   Flag,
+  Pencil,
   Plus,
   Search,
   Settings,
@@ -216,6 +217,13 @@ const getTaskStyleClass = (type) => {
   return styles[type] || "bg-slate-100 text-slate-700 border-slate-300";
 };
 
+const toDateTimeInputValue = (value) => {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  const pad = (n) => String(n).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+};
+
 const toTimeInputValue = (date) => {
   const hours = String(date.getHours()).padStart(2, "0");
   const minutes = String(date.getMinutes()).padStart(2, "0");
@@ -289,6 +297,7 @@ export default function StandardWorkBoard() {
   const [locationFilter, setLocationFilter] = useState("all");
   const [selectedTask, setSelectedTask] = useState(null);
   const [showCreate, setShowCreate] = useState(false);
+  const [editingTaskId, setEditingTaskId] = useState(null);
   const [showIssue, setShowIssue] = useState(false);
   const [currentPage, setCurrentPage] = useState("board");
   const [session, setSession] = useState(null);
@@ -1481,9 +1490,57 @@ export default function StandardWorkBoard() {
     setTimeout(() => setNotice(""), 2200);
   };
 
+  const openEditTask = (task) => {
+    setForm({
+      resourceId: task.resourceId,
+      title: task.title,
+      type: task.type,
+      person: task.person,
+      start: toDateTimeInputValue(task.start),
+      end: toDateTimeInputValue(task.end),
+      note: task.note || "",
+    });
+    setEditingTaskId(task.id);
+    setSelectedTask(null);
+    setShowCreate(true);
+  };
+
+  const closeTaskForm = () => {
+    setShowCreate(false);
+    setEditingTaskId(null);
+  };
+
   const addTask = async () => {
     if (!form.title.trim() || !form.person.trim() || new Date(form.end) <= new Date(form.start)) {
       setNotice("Add a valid assignee and a start/end time that makes sense.");
+      return;
+    }
+
+    if (editingTaskId !== null) {
+      const existing = tasks.find((task) => task.id === editingTaskId);
+      if (!existing) {
+        setEditingTaskId(null);
+        setShowCreate(false);
+        return;
+      }
+      const editedTask = {
+        ...existing,
+        resourceId: form.resourceId,
+        title: form.title,
+        type: form.type,
+        person: form.person,
+        start: form.start,
+        end: form.end,
+        note: form.note,
+        updated_at: new Date().toISOString(),
+        updated_by: getCurrentUserName(session, profile),
+      };
+      setTasks((current) => current.map((task) => (task.id === editingTaskId ? editedTask : task)));
+      setEditingTaskId(null);
+      setShowCreate(false);
+      await persistTaskUpdate(editedTask);
+      setNotice("Activity updated.");
+      setTimeout(() => setNotice(""), 2200);
       return;
     }
 
@@ -3016,6 +3073,14 @@ export default function StandardWorkBoard() {
             </div>
 
             <div className="mt-5 flex flex-col gap-2">
+              {canEditTasks && (
+                <button
+                  onClick={() => openEditTask(selectedTask)}
+                  className="flex w-full items-center justify-center gap-2 rounded-xl border border-slate-300 bg-white px-4 py-3 font-semibold text-slate-700 hover:bg-slate-50"
+                >
+                  <Pencil size={18} /> Edit activity
+                </button>
+              )}
               <button
                 onClick={() => {
                   toggleComplete(selectedTask.id);
@@ -3083,14 +3148,14 @@ export default function StandardWorkBoard() {
       )}
 
       {showCreate && (
-        <div className="fixed inset-0 z-40 flex items-center justify-center bg-slate-950/40 p-4" onClick={() => setShowCreate(false)}>
+        <div className="fixed inset-0 z-40 flex items-center justify-center bg-slate-950/40 p-4" onClick={closeTaskForm}>
           <div className="w-full max-w-lg rounded-2xl bg-white p-6 shadow-2xl" onClick={(e) => e.stopPropagation()}>
             <div className="flex items-center justify-between">
               <div>
-                <p className="text-xs font-semibold uppercase tracking-wider text-emerald-700">New assignment</p>
-                <h2 className="text-xl font-bold">Add work to the board</h2>
+                <p className="text-xs font-semibold uppercase tracking-wider text-emerald-700">{editingTaskId !== null ? "Edit assignment" : "New assignment"}</p>
+                <h2 className="text-xl font-bold">{editingTaskId !== null ? "Edit activity" : "Add work to the board"}</h2>
               </div>
-              <button onClick={() => setShowCreate(false)} className="rounded-lg p-2 hover:bg-slate-100"><X size={18} /></button>
+              <button onClick={closeTaskForm} className="rounded-lg p-2 hover:bg-slate-100"><X size={18} /></button>
             </div>
 
             <div className="mt-5 grid gap-4 sm:grid-cols-2">
@@ -3103,7 +3168,7 @@ export default function StandardWorkBoard() {
               <label className="text-sm sm:col-span-2 text-slate-700">Notes<textarea value={form.note} onChange={(e) => setForm({ ...form, note: e.target.value })} rows={3} className="mt-1 w-full rounded-lg border p-2.5" /></label>
             </div>
 
-            <button onClick={addTask} className="mt-5 w-full rounded-xl bg-[#103c2d] px-4 py-3 font-semibold text-white hover:bg-emerald-900">Add to live board</button>
+            <button onClick={addTask} className="mt-5 w-full rounded-xl bg-[#103c2d] px-4 py-3 font-semibold text-white hover:bg-emerald-900">{editingTaskId !== null ? "Save changes" : "Add to live board"}</button>
           </div>
         </div>
       )}
