@@ -3001,7 +3001,7 @@ export default function StandardWorkBoard() {
           <div className="flex flex-wrap gap-4 border-t bg-slate-50 px-4 py-3">
             {workTypes.map((type) => (
               <div key={type.id} className="flex items-center gap-2 text-xs text-slate-600">
-                <span className={`h-3 w-3 rounded border ${getTaskStyleClass(type.id)}`} />
+                <span className={`h-3 w-3 rounded border ${colorPalette[type.color] || getTaskStyleClass(type.id)}`} />
                 {type.name}
               </div>
             ))}
