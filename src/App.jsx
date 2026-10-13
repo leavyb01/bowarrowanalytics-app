@@ -364,10 +364,12 @@ export default function StandardWorkBoard() {
   }, [resourcesConfig]);
 
   useEffect(() => {
+    if (!workTypes.length) return;
     setStandardTimings((current) => {
-      const next = { ...current };
+      const next = {};
       workTypes.forEach((type) => {
-        next[type.id] = Number(next[type.id] ?? type.minutes ?? 60) || 60;
+        if (!type.id) return;
+        next[type.id] = Number(current[type.id] ?? type.minutes ?? 60) || 60;
       });
       return next;
     });
@@ -2240,20 +2242,20 @@ export default function StandardWorkBoard() {
           </div>
 
           <div className="space-y-3">
-            {workTypes.map((type) => (
-              <div key={type.id} className="rounded-xl border border-slate-200 bg-slate-50 p-3">
+            {workTypes.map((type, typeIndex) => (
+              <div key={typeIndex} className="rounded-xl border border-slate-200 bg-slate-50 p-3">
                 <div className="flex items-center justify-between gap-3">
                   <label className="flex-1 text-xs font-medium uppercase tracking-[0.12em] text-slate-500">
                     Work type name
                     <input
                       value={type.name}
-                      onChange={(event) => setWorkTypes((current) => current.map((item) => item.id === type.id ? { ...item, name: event.target.value } : item))}
+                      onChange={(event) => setWorkTypes((current) => current.map((item, index) => index === typeIndex ? { ...item, name: event.target.value } : item))}
                       className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700 outline-none focus:border-emerald-700"
                     />
                   </label>
                   <button
                     type="button"
-                    onClick={() => setWorkTypes((current) => current.filter((item) => item.id !== type.id))}
+                    onClick={() => setWorkTypes((current) => current.filter((_, index) => index !== typeIndex))}
                     className="inline-flex items-center gap-1 rounded-lg border border-rose-200 bg-rose-50 px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.12em] text-rose-700 hover:bg-rose-100"
                   >
                     <Trash2 size={12} /> Delete
@@ -2265,7 +2267,7 @@ export default function StandardWorkBoard() {
                     Type id
                     <input
                       value={type.id}
-                      onChange={(event) => setWorkTypes((current) => current.map((item) => item.id === type.id ? { ...item, id: event.target.value.trim() || type.id } : item))}
+                      onChange={(event) => setWorkTypes((current) => current.map((item, index) => index === typeIndex ? { ...item, id: event.target.value.trim() } : item))}
                       className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700 outline-none focus:border-emerald-700"
                     />
                   </label>
@@ -2279,7 +2281,7 @@ export default function StandardWorkBoard() {
                         value={type.minutes}
                         onChange={(event) => {
                           const nextMinutes = Number(event.target.value) || 5;
-                          setWorkTypes((current) => current.map((item) => item.id === type.id ? { ...item, minutes: nextMinutes } : item));
+                          setWorkTypes((current) => current.map((item, index) => index === typeIndex ? { ...item, minutes: nextMinutes } : item));
                           setStandardTimings((current) => ({ ...current, [type.id]: nextMinutes }));
                         }}
                         className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700 outline-none focus:border-emerald-700"
