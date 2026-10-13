@@ -257,6 +257,9 @@ export default function StandardWorkBoard() {
   const [authMessage, setAuthMessage] = useState("");
   const [authLoading, setAuthLoading] = useState(false);
   const [authReady, setAuthReady] = useState(false);
+  const [memberships, setMemberships] = useState([]);
+  const [membershipsLoadedFor, setMembershipsLoadedFor] = useState(null);
+  const [activeOrgId, setActiveOrgId] = useState(null);
   const [demoAccess, setDemoAccess] = useState(false);
   const [demoRoleOverride, setDemoRoleOverride] = useState(null);
   const [selectedTeamMember, setSelectedTeamMember] = useState("");
@@ -420,49 +423,68 @@ export default function StandardWorkBoard() {
       setSyncMessage("");
 
       try {
-        if (!hasSupabase || !supabase) {
+        if (!hasSupabase || !supabase || demoAccess) {
           setTasks(initialTasks);
           setResources(resourcesConfig);
           return;
         }
 
-        const [{ data: resourceData, error: resourceError }, { data: taskData, error: taskError }] = await Promise.all([
-          supabase.from("standard_work_resources").select("*").order("name"),
-          supabase.from("standard_work_tasks").select("*").order("start_at"),
+        setTasks([]);
+        setResources([]);
+
+        if (!activeOrgId) {
+          return;
+        }
+
+        const [
+          { data: resourceData, error: resourceError },
+          { data: taskData, error: taskError },
+          { data: settingsData },
+        ] = await Promise.all([
+          supabase.from("standard_work_resources").select("*").eq("org_id", activeOrgId).order("name"),
+          supabase.from("standard_work_tasks").select("*").eq("org_id", activeOrgId).order("start_at"),
+          supabase.from("organisation_settings").select("*").eq("id", activeOrgId).maybeSingle(),
         ]);
 
-        if (resourceError && resourceError.code !== "42P01") {
-          throw resourceError;
-        }
-
-        if (taskError && taskError.code !== "42P01") {
-          throw taskError;
-        }
+        if (resourceError) throw resourceError;
+        if (taskError) throw taskError;
 
         if (isMounted) {
-          if (resourceData && resourceData.length) {
-            setResources(resourceData.map((resource) => ({
-              id: resource.id,
-              name: resource.name,
-              zone: resource.zone ?? "Operations",
-              status: resource.status ?? "Available",
-              role: resource.role ?? "",
-            })));
-          } else {
-            setResources(resourcesConfig);
-          }
+          const loadedResources = (resourceData || []).map((resource) => ({
+            id: resource.id,
+            name: resource.name,
+            zone: resource.zone ?? "Operations",
+            status: resource.status ?? "Available",
+            role: resource.role ?? "",
+          }));
+          setResources(loadedResources);
+          setResourcesConfig(loadedResources.map((resource) => ({
+            id: resource.id,
+            name: resource.name,
+            zone: resource.zone,
+            type: resource.role,
+            status: resource.status,
+          })));
+          setTasks((taskData || []).map(normalizeTask));
 
-          if (taskData && taskData.length) {
-            setTasks(taskData.map(normalizeTask));
-          } else {
-            setTasks(initialTasks);
-          }
+          const savedWorkTypes = Array.isArray(settingsData?.work_types) && settingsData.work_types.length
+            ? settingsData.work_types.map((type) => ({
+                id: String(type.id || type.value || type.name || "custom-work-type"),
+                name: type.name || type.label || "Custom work type",
+                minutes: Number(type.minutes) || 60,
+              }))
+            : defaultWorkTypes;
+          setWorkTypes(savedWorkTypes);
+          setStandardTimings({
+            ...Object.fromEntries(defaultWorkTypes.map((type) => [type.id, type.minutes])),
+            ...(settingsData?.standard_timings || {}),
+          });
         }
       } catch (error) {
         if (isMounted) {
-          setTasks(initialTasks);
-          setResources(resourcesConfig);
-          setSyncMessage("Supabase connection unavailable, showing mock data.");
+          setTasks([]);
+          setResources([]);
+          setSyncMessage("Could not load this organisation's board. Check your connection and access.");
         }
       } finally {
         if (isMounted) {
@@ -475,19 +497,21 @@ export default function StandardWorkBoard() {
     return () => {
       isMounted = false;
     };
-  }, []);
+  }, [activeOrgId, demoAccess]);
 
   useEffect(() => {
-    if (!hasSupabase || !supabase) return undefined;
+    if (!hasSupabase || !supabase || demoAccess || !activeOrgId) return undefined;
 
+    const orgFilter = `org_id=eq.${activeOrgId}`;
     const channel = supabase
-      .channel("standard-work-board-live")
+      .channel(`standard-work-board-live-${activeOrgId}`)
       .on(
         "postgres_changes",
         {
           event: "*",
           schema: "public",
           table: "standard_work_tasks",
+          filter: orgFilter,
         },
         (payload) => {
           if (payload.eventType === "INSERT" || payload.eventType === "UPDATE") {
@@ -515,6 +539,7 @@ export default function StandardWorkBoard() {
           event: "*",
           schema: "public",
           table: "standard_work_resources",
+          filter: orgFilter,
         },
         (payload) => {
           if (payload.eventType === "INSERT" || payload.eventType === "UPDATE") {
@@ -547,7 +572,7 @@ export default function StandardWorkBoard() {
     return () => {
       supabase.removeChannel(channel);
     };
-  }, []);
+  }, [activeOrgId, demoAccess]);
 
   useEffect(() => {
     let isMounted = true;
@@ -618,6 +643,80 @@ export default function StandardWorkBoard() {
       isMounted = false;
     };
   }, []);
+
+  const sessionUserId = session?.user?.id ?? null;
+
+  useEffect(() => {
+    let isMounted = true;
+
+    if (!hasSupabase || !supabase || demoAccess || !sessionUserId) {
+      setMemberships([]);
+      setActiveOrgId(null);
+      setMembershipsLoadedFor(null);
+      return undefined;
+    }
+
+    const loadMemberships = async () => {
+      const { data, error } = await supabase
+        .from("organisation_memberships")
+        .select("org_id, role, status, organisations(id, name, slug)")
+        .eq("user_id", sessionUserId)
+        .eq("status", "active");
+
+      if (!isMounted) return;
+
+      const rows = error ? [] : (data || []).filter((row) => row.organisations);
+      setMemberships(rows);
+
+      let stored = null;
+      try {
+        stored = window.localStorage.getItem(`standard-work-active-org:${sessionUserId}`);
+      } catch (storageError) {
+        stored = null;
+      }
+
+      const storedMatch = rows.find((row) => row.org_id === stored);
+      if (storedMatch) {
+        setActiveOrgId(storedMatch.org_id);
+      } else if (rows.length === 1) {
+        setActiveOrgId(rows[0].org_id);
+      } else {
+        setActiveOrgId(null);
+      }
+
+      setMembershipsLoadedFor(sessionUserId);
+    };
+
+    loadMemberships();
+
+    return () => {
+      isMounted = false;
+    };
+  }, [sessionUserId, demoAccess]);
+
+  const activeMembership = useMemo(
+    () => memberships.find((row) => row.org_id === activeOrgId) || null,
+    [memberships, activeOrgId],
+  );
+  const activeOrgName = activeMembership?.organisations?.name || "";
+
+  const selectOrganisation = (orgId) => {
+    if (sessionUserId) {
+      try {
+        if (orgId) {
+          window.localStorage.setItem(`standard-work-active-org:${sessionUserId}`, orgId);
+        } else {
+          window.localStorage.removeItem(`standard-work-active-org:${sessionUserId}`);
+        }
+      } catch (storageError) {
+        // Remembering the choice is optional.
+      }
+    }
+    setDemoRoleOverride(null);
+    setCurrentPage("board");
+    setSettingsOpen(false);
+    setActiveOrgId(orgId);
+  };
 
   const rangeDates = useMemo(() => {
     const currentDate = dateValue(selectedDate);
@@ -855,7 +954,12 @@ export default function StandardWorkBoard() {
     return Math.round(roomUtilRows.reduce((sum, row) => sum + row.utilisation, 0) / roomUtilRows.length);
   }, [roomUtilRows]);
 
-  const currentRole = demoRoleOverride || profile?.role || (demoAccess ? "admin" : hasSupabase ? "viewer" : "admin");
+  const normalizeRole = (role) => (["org_admin", "super_admin", "site_admin"].includes(role) ? "admin" : role);
+  const membershipRole = activeMembership ? normalizeRole(activeMembership.role) : null;
+  const isRealSession = hasSupabase && !demoAccess;
+  const canPreviewRoles = demoAccess || membershipRole === "admin";
+  const currentRole = (canPreviewRoles && demoRoleOverride)
+    || (isRealSession ? (membershipRole || "viewer") : "admin");
   const cleanerDisplayName = useMemo(() => {
     const candidateNames = [
       profile?.name,
@@ -912,12 +1016,6 @@ export default function StandardWorkBoard() {
   const canEditTasks = ["admin", "manager", "operations", "cleaner"].includes(currentRole);
   const canViewKpis = ["admin", "manager", "operations"].includes(currentRole);
   const canViewPerformance = ["admin", "manager"].includes(currentRole);
-
-  useEffect(() => {
-    if (!demoRoleOverride && profile?.role) {
-      setDemoRoleOverride(profile.role);
-    }
-  }, [profile, demoRoleOverride]);
 
   const handleDemoAccess = () => {
     setDemoAccess(true);
@@ -998,6 +1096,8 @@ export default function StandardWorkBoard() {
     }
     setProfile(null);
     setSession(null);
+    setMemberships([]);
+    setActiveOrgId(null);
     setDemoRoleOverride(null);
     setDemoAccess(false);
     setAuthMessage("");
@@ -1005,45 +1105,53 @@ export default function StandardWorkBoard() {
 
   const persistBusinessSettings = async () => {
     const payload = { resourcesConfig, standardTimings, workTypes };
-    if (typeof window !== "undefined") {
-      window.localStorage.setItem("standard-work-business-config", JSON.stringify(payload));
-    }
     setResources(resourcesConfig);
 
-    if (!hasSupabase || !supabase) return;
+    if (!hasSupabase || !supabase || demoAccess) {
+      if (typeof window !== "undefined") {
+        window.localStorage.setItem("standard-work-business-config", JSON.stringify(payload));
+      }
+      return;
+    }
+
+    if (!activeOrgId) return;
 
     try {
-      await supabase.from("organisation_settings").upsert({
-        id: "default",
-        org_id: "default",
-        resource_config: resourcesConfig,
-        standard_timings: standardTimings,
-        work_types: workTypes,
-        updated_at: new Date().toISOString(),
-      }, { onConflict: "id" });
+      const results = await Promise.all([
+        supabase.from("organisation_settings").upsert({
+          id: activeOrgId,
+          org_id: activeOrgId,
+          resource_config: resourcesConfig,
+          standard_timings: standardTimings,
+          work_types: workTypes,
+          updated_at: new Date().toISOString(),
+        }, { onConflict: "id" }),
+        supabase.from("standard_work_resources").upsert(
+          resourcesConfig.map((resource) => ({
+            id: resource.id,
+            org_id: activeOrgId,
+            name: resource.name,
+            zone: resource.zone,
+            role: resource.type || "",
+            status: resource.status,
+          })),
+          { onConflict: "org_id,id" }
+        ),
+        supabase.from("standard_task_timings").upsert(
+          Object.entries(standardTimings).map(([type, minutes]) => ({
+            id: `${activeOrgId}:${type}`,
+            org_id: activeOrgId,
+            work_type: type,
+            standard_minutes: minutes,
+          })),
+          { onConflict: "id" }
+        ),
+      ]);
 
-      await supabase.from("standard_work_resources").upsert(
-        resourcesConfig.map((resource) => ({
-          id: resource.id,
-          name: resource.name,
-          zone: resource.zone,
-          role: resource.type || "",
-          status: resource.status,
-        })),
-        { onConflict: "id" }
-      );
-
-      await supabase.from("standard_task_timings").upsert(
-        Object.entries(standardTimings).map(([type, minutes]) => ({
-          id: type,
-          org_id: "default",
-          work_type: type,
-          standard_minutes: minutes,
-        })),
-        { onConflict: "id" }
-      );
+      const failed = results.find((result) => result.error);
+      if (failed) throw failed.error;
     } catch (error) {
-      setNotice("Saved locally. Supabase config sync is unavailable right now.");
+      setNotice("Could not save settings to the server. Check your access and try again.");
       setTimeout(() => setNotice(""), 2500);
     }
   };
@@ -1240,8 +1348,8 @@ export default function StandardWorkBoard() {
   const isTodayDate = (dateInput) => formatDateISO(new Date(dateInput)) === todayKey;
 
   const persistTaskUpdate = async (task) => {
-    if (!hasSupabase || !supabase) return;
-    const { error } = await supabase.from("standard_work_tasks").upsert(toSupabaseTask(task), { onConflict: "id" });
+    if (!hasSupabase || !supabase || demoAccess || !activeOrgId) return;
+    const { error } = await supabase.from("standard_work_tasks").upsert({ ...toSupabaseTask(task), org_id: activeOrgId }, { onConflict: "id" });
     if (error) {
       setSyncMessage("Supabase update failed, but the local board was updated.");
     }
@@ -1314,8 +1422,8 @@ export default function StandardWorkBoard() {
     setTasks((current) => current.filter((task) => task.id !== taskId));
     setSelectedTask(null);
 
-    if (hasSupabase && supabase) {
-      const { error } = await supabase.from("standard_work_tasks").delete().eq("id", taskId);
+    if (hasSupabase && supabase && !demoAccess && activeOrgId) {
+      const { error } = await supabase.from("standard_work_tasks").delete().eq("id", taskId).eq("org_id", activeOrgId);
       if (error) {
         setSyncMessage("Task was removed locally, but Supabase deletion failed.");
       }
@@ -1347,8 +1455,8 @@ export default function StandardWorkBoard() {
 
     setTasks((current) => [...current, newTask]);
 
-    if (hasSupabase && supabase) {
-      const { error } = await supabase.from("standard_work_tasks").insert(toSupabaseTask(newTask));
+    if (hasSupabase && supabase && !demoAccess && activeOrgId) {
+      const { error } = await supabase.from("standard_work_tasks").insert({ ...toSupabaseTask(newTask), org_id: activeOrgId });
       if (error) {
         setSyncMessage("The task was added locally, but Supabase insert failed.");
       }
@@ -1383,8 +1491,8 @@ export default function StandardWorkBoard() {
     };
     setTasks((current) => [...current, issueTask]);
 
-    if (hasSupabase && supabase) {
-      const { error } = await supabase.from("standard_work_tasks").insert(toSupabaseTask(issueTask));
+    if (hasSupabase && supabase && !demoAccess && activeOrgId) {
+      const { error } = await supabase.from("standard_work_tasks").insert({ ...toSupabaseTask(issueTask), org_id: activeOrgId });
       if (error) {
         setSyncMessage("Issue logged locally, but Supabase sync failed.");
       }
@@ -2255,7 +2363,53 @@ export default function StandardWorkBoard() {
     </div>
   );
 
+  const renderOrgScreen = () => {
+    const loading = membershipsLoadedFor !== sessionUserId;
+    return (
+      <div className="min-h-screen bg-[#f4f6f2] text-slate-900">
+        <div className="flex min-h-screen items-center justify-center p-6">
+          <div className="w-full max-w-xl rounded-3xl border border-slate-200 bg-white p-8 shadow-xl">
+            <p className="text-center text-[10px] font-semibold uppercase tracking-[0.28em] text-emerald-700">Bow & Arrow Analytics</p>
+            {loading ? (
+              <h2 className="mt-3 text-center text-xl font-semibold text-slate-700">Loading your organisations...</h2>
+            ) : memberships.length === 0 ? (
+              <>
+                <h2 className="mt-3 text-center text-3xl font-bold text-slate-900">No access yet</h2>
+                <p className="mt-3 text-center text-sm text-slate-600">
+                  You are signed in, but you have not been added to an organisation. Ask your administrator to grant you access.
+                </p>
+              </>
+            ) : (
+              <>
+                <h2 className="mt-3 text-center text-3xl font-bold text-slate-900">Choose an organisation</h2>
+                <div className="mt-6 grid gap-3">
+                  {memberships.map((membership) => (
+                    <button
+                      key={membership.org_id}
+                      type="button"
+                      onClick={() => selectOrganisation(membership.org_id)}
+                      className="flex items-center justify-between rounded-xl border border-slate-300 bg-white px-4 py-3 text-left text-sm font-semibold text-slate-800 hover:bg-emerald-50"
+                    >
+                      <span>{membership.organisations?.name || membership.org_id}</span>
+                      <span className="text-[10px] uppercase tracking-[0.14em] text-slate-500">{membership.role}</span>
+                    </button>
+                  ))}
+                </div>
+              </>
+            )}
+            <div className="mt-6 flex justify-center">
+              <button type="button" onClick={handleSignOut} className="rounded-xl border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50">
+                Sign out
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
   if (hasSupabase && authReady && !isAuthenticated) return renderAuthGate();
+  if (hasSupabase && session && !demoAccess && !activeOrgId) return renderOrgScreen();
 
   return (
     <div className="min-h-screen bg-[#f4f6f2] text-slate-900">
@@ -2301,18 +2455,40 @@ export default function StandardWorkBoard() {
             )}
             {hasSupabase && (
               <div className="flex items-center gap-2 rounded-full border border-white/15 bg-white/5 px-2 py-1.5">
-                <span className="text-[9px] font-semibold uppercase tracking-[0.14em] text-lime-100">Role</span>
-                <select
-                  value={demoRoleOverride === null ? currentRole : demoRoleOverride}
-                  onChange={(event) => setDemoRoleOverride(event.target.value)}
-                  className="rounded-md border border-white/10 bg-[#0d1f1c] px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.12em] text-white outline-none"
-                >
-                  <option value="admin">Admin</option>
-                  <option value="manager">Manager</option>
-                  <option value="operations">Operations</option>
-                  <option value="cleaner">Cleaner</option>
-                  <option value="viewer">Viewer</option>
-                </select>
+                {session && !demoAccess && (
+                  memberships.length > 1 ? (
+                    <select
+                      value={activeOrgId || ""}
+                      onChange={(event) => selectOrganisation(event.target.value)}
+                      aria-label="Organisation"
+                      className="rounded-md border border-white/10 bg-[#0d1f1c] px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.12em] text-white outline-none"
+                    >
+                      {memberships.map((membership) => (
+                        <option key={membership.org_id} value={membership.org_id}>
+                          {membership.organisations?.name || membership.org_id}
+                        </option>
+                      ))}
+                    </select>
+                  ) : (
+                    <span className="px-1 text-[10px] font-semibold uppercase tracking-[0.12em] text-lime-100">{activeOrgName}</span>
+                  )
+                )}
+                {canPreviewRoles && (
+                  <>
+                    <span className="text-[9px] font-semibold uppercase tracking-[0.14em] text-lime-100">Role</span>
+                    <select
+                      value={demoRoleOverride === null ? currentRole : demoRoleOverride}
+                      onChange={(event) => setDemoRoleOverride(event.target.value)}
+                      className="rounded-md border border-white/10 bg-[#0d1f1c] px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.12em] text-white outline-none"
+                    >
+                      <option value="admin">Admin</option>
+                      <option value="manager">Manager</option>
+                      <option value="operations">Operations</option>
+                      <option value="cleaner">Cleaner</option>
+                      <option value="viewer">Viewer</option>
+                    </select>
+                  </>
+                )}
                 {session && (
                   <button type="button" onClick={handleSignOut} className="rounded-full border border-white/10 bg-white/5 px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.12em] text-white hover:bg-white/10">
                     Sign out
