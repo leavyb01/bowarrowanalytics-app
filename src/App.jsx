@@ -445,11 +445,11 @@ export default function StandardWorkBoard() {
   };
 
   const personLanes = useMemo(() => {
-    const map = new Map(
-      initialPeople
-        .filter((person) => person.id !== "Guest")
-        .map((person) => [person.id, person])
-    );
+    const isDemo = !hasSupabase || !supabase || demoAccess;
+    const base = isDemo
+      ? initialPeople.filter((person) => person.id !== "Guest").map((person) => [person.id, person])
+      : teamMembers.map((member) => [member.name, { id: member.name, name: member.name, role: member.role || "Team member" }]);
+    const map = new Map(base);
     tasks.forEach((task) => {
       if (!task.person || task.person === "Guest" || task.person === "Customer") return;
       if (!map.has(task.person)) {
@@ -457,7 +457,7 @@ export default function StandardWorkBoard() {
       }
     });
     return [...map.values()];
-  }, [tasks]);
+  }, [tasks, teamMembers, demoAccess]);
 
   const laneItems = laneMode === "resource" ? resources : personLanes;
 
