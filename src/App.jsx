@@ -163,13 +163,53 @@ const labels = {
   service: "Service",
 };
 
+const colorPalette = {
+  indigo: "bg-indigo-100 text-indigo-900 border-indigo-300",
+  emerald: "bg-emerald-100 text-emerald-900 border-emerald-300",
+  rose: "bg-rose-100 text-rose-900 border-rose-300",
+  amber: "bg-amber-100 text-amber-900 border-amber-300",
+  sky: "bg-sky-100 text-sky-900 border-sky-300",
+  violet: "bg-violet-100 text-violet-900 border-violet-300",
+  orange: "bg-orange-100 text-orange-900 border-orange-300",
+  teal: "bg-teal-100 text-teal-900 border-teal-300",
+  pink: "bg-pink-100 text-pink-900 border-pink-300",
+  lime: "bg-lime-100 text-lime-900 border-lime-300",
+  slate: "bg-slate-200 text-slate-800 border-slate-300",
+};
+
+const colorSwatches = {
+  indigo: "bg-indigo-400",
+  emerald: "bg-emerald-400",
+  rose: "bg-rose-400",
+  amber: "bg-amber-400",
+  sky: "bg-sky-400",
+  violet: "bg-violet-400",
+  orange: "bg-orange-400",
+  teal: "bg-teal-400",
+  pink: "bg-pink-400",
+  lime: "bg-lime-400",
+  slate: "bg-slate-400",
+};
+
+const defaultTypeColors = { booking: "indigo", cleaning: "emerald", issue: "rose", inspection: "amber", service: "sky" };
+
 const defaultWorkTypes = [
-  { id: "booking", name: "Booking", minutes: 90 },
-  { id: "cleaning", name: "Cleaning", minutes: 120 },
-  { id: "inspection", name: "Inspection", minutes: 45 },
-  { id: "issue", name: "Issue", minutes: 60 },
-  { id: "service", name: "Service", minutes: 30 },
+  { id: "booking", name: "Booking", minutes: 90, color: "indigo" },
+  { id: "cleaning", name: "Cleaning", minutes: 120, color: "emerald" },
+  { id: "inspection", name: "Inspection", minutes: 45, color: "amber" },
+  { id: "issue", name: "Issue", minutes: 60, color: "rose" },
+  { id: "service", name: "Service", minutes: 30, color: "sky" },
 ];
+
+const normalizeWorkType = (type) => {
+  const id = String(type.id || type.value || type.name || "custom-work-type");
+  return {
+    id,
+    name: type.name || type.label || "Custom work type",
+    minutes: Number(type.minutes) || 60,
+    color: colorPalette[type.color] ? type.color : (defaultTypeColors[id] || "slate"),
+  };
+};
 
 const getTaskStyleClass = (type) => {
   if (!type) return "bg-slate-100 text-slate-700 border-slate-300";
@@ -315,11 +355,7 @@ export default function StandardWorkBoard() {
 
       const parsed = JSON.parse(saved);
       if (Array.isArray(parsed?.workTypes) && parsed.workTypes.length) {
-        return parsed.workTypes.map((type) => ({
-          id: String(type.id || type.value || type.name || "custom-work-type"),
-          name: type.name || type.label || "Custom work type",
-          minutes: Number(type.minutes) || 60,
-        }));
+        return parsed.workTypes.map(normalizeWorkType);
       }
     } catch (error) {
       // Ignore invalid cached config and keep the defaults.
@@ -386,6 +422,12 @@ export default function StandardWorkBoard() {
     () => ({ ...labels, ...Object.fromEntries(workTypes.map((type) => [type.id, type.name])) }),
     [workTypes]
   );
+
+  const taskTypeClass = (task) => {
+    if (task.status === "completed") return styles.completed;
+    const configured = workTypes.find((type) => type.id === task.type);
+    return colorPalette[configured?.color] || styles[task.type] || styles.booking;
+  };
 
   const personLanes = useMemo(() => {
     const map = new Map(
@@ -470,11 +512,7 @@ export default function StandardWorkBoard() {
           setTasks((taskData || []).map(normalizeTask));
 
           const savedWorkTypes = Array.isArray(settingsData?.work_types) && settingsData.work_types.length
-            ? settingsData.work_types.map((type) => ({
-                id: String(type.id || type.value || type.name || "custom-work-type"),
-                name: type.name || type.label || "Custom work type",
-                minutes: Number(type.minutes) || 60,
-              }))
+            ? settingsData.work_types.map(normalizeWorkType)
             : defaultWorkTypes;
           setWorkTypes(savedWorkTypes);
           setStandardTimings({
@@ -2233,7 +2271,7 @@ export default function StandardWorkBoard() {
               type="button"
               onClick={() => setWorkTypes((current) => [
                 ...current,
-                { id: `custom-${Date.now()}`, name: `Custom type ${current.length + 1}`, minutes: 60 },
+                { id: `custom-${Date.now()}`, name: `Custom type ${current.length + 1}`, minutes: 60, color: Object.keys(colorPalette)[current.length % 10] },
               ])}
               className="inline-flex items-center gap-2 rounded-xl border border-slate-300 bg-slate-50 px-3 py-2 text-xs font-semibold uppercase tracking-[0.12em] text-slate-700 hover:bg-slate-100"
             >
@@ -2289,6 +2327,21 @@ export default function StandardWorkBoard() {
                       <span className="text-sm text-slate-500">mins</span>
                     </div>
                   </label>
+                </div>
+                <div className="mt-3">
+                  <span className="text-xs font-medium uppercase tracking-[0.12em] text-slate-500">Colour</span>
+                  <div className="mt-1 flex flex-wrap gap-2">
+                    {Object.keys(colorPalette).map((colorKey) => (
+                      <button
+                        key={colorKey}
+                        type="button"
+                        title={colorKey}
+                        aria-label={`Use ${colorKey}`}
+                        onClick={() => setWorkTypes((current) => current.map((item, index) => index === typeIndex ? { ...item, color: colorKey } : item))}
+                        className={`h-7 w-7 rounded-full border-2 ${colorSwatches[colorKey]} ${type.color === colorKey ? "border-slate-900 ring-2 ring-offset-1 ring-slate-400" : "border-white"}`}
+                      />
+                    ))}
+                  </div>
                 </div>
               </div>
             ))}
@@ -2733,7 +2786,7 @@ export default function StandardWorkBoard() {
                               onDragStart={(event) => handleTaskDragStart(event, task)}
                               onClick={() => setSelectedTask(task)}
                               style={{ left: `${left}%`, width: `${width}%`, lineHeight: '1.15' }}
-                              className={`absolute top-2 h-[78px] overflow-hidden rounded-xl border px-2.5 py-2 text-left shadow-sm transition hover:-translate-y-0.5 hover:shadow-md whitespace-normal break-words leading-tight ${task.status === "completed" ? styles.completed : styles[task.type] || styles.booking} ${taskConflictMap.has(task.id) ? "ring-2 ring-rose-300" : ""}`}
+                              className={`absolute top-2 h-[78px] overflow-hidden rounded-xl border px-2.5 py-2 text-left shadow-sm transition hover:-translate-y-0.5 hover:shadow-md whitespace-normal break-words leading-tight ${taskTypeClass(task)} ${taskConflictMap.has(task.id) ? "ring-2 ring-rose-300" : ""}`}
                             >
                               <div className="flex items-start justify-between gap-1">
                                 <p className="text-[11px] font-bold leading-tight break-words">{task.title}</p>
@@ -2823,7 +2876,7 @@ export default function StandardWorkBoard() {
                                 draggable
                                 onDragStart={(event) => handleTaskDragStart(event, task)}
                                 onClick={() => setSelectedTask(task)}
-                                className={`flex min-h-[32px] w-full items-center rounded-lg border px-2 py-1 text-left text-[10px] font-medium leading-tight whitespace-normal overflow-hidden ${task.status === "completed" ? styles.completed : styles[task.type] || styles.booking} ${taskConflictMap.has(task.id) ? "ring-1 ring-rose-300" : ""}`}
+                                className={`flex min-h-[32px] w-full items-center rounded-lg border px-2 py-1 text-left text-[10px] font-medium leading-tight whitespace-normal overflow-hidden ${taskTypeClass(task)} ${taskConflictMap.has(task.id) ? "ring-1 ring-rose-300" : ""}`}
                                 style={{
                                   borderWidth: '1px',
                                   borderStyle: 'solid',
@@ -2922,7 +2975,7 @@ export default function StandardWorkBoard() {
           <div className="w-full max-w-lg rounded-2xl bg-white p-6 shadow-2xl" onClick={(e) => e.stopPropagation()}>
             <div className="flex items-start justify-between gap-4">
               <div>
-                <span className={`inline-flex rounded-full border px-2.5 py-1 text-xs font-semibold ${selectedTask.status === "completed" ? styles.completed : styles[selectedTask.type] || styles.booking}`}>
+                <span className={`inline-flex rounded-full border px-2.5 py-1 text-xs font-semibold ${taskTypeClass(selectedTask)}`}>
                   {selectedTask.status === "completed" ? "Completed" : typeLabels[selectedTask.type] || labels[selectedTask.type] || selectedTask.type}
                 </span>
                 <h2 className="mt-3 text-xl font-bold">{selectedTask.title}</h2>
