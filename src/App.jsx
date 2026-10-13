@@ -1785,16 +1785,21 @@ export default function StandardWorkBoard() {
   }, [tasks]);
 
   const operationalAlerts = useMemo(() => {
-    const issueCount = tasks.filter((task) => task.type === "issue" || task.status === "issue").length;
-    const overdueCount = tasks.filter((task) => task.status !== "completed" && !(task.type === "issue" || task.status === "issue") && new Date(task.end).getTime() < Date.now()).length;
-    const conflictCount = tasks.filter((task) => taskConflictMap.has(task.id)).length;
+    const open = tasks.filter((task) => task.status !== "completed");
+    const issues = tasks.filter((task) => task.type === "issue" || task.status === "issue");
+    const overdue = open.filter((task) => !(task.type === "issue" || task.status === "issue") && new Date(task.end).getTime() < Date.now());
+    const conflicts = tasks.filter((task) => taskConflictMap.has(task.id));
+    const absent = tasks.filter((task) => taskAbsence(task));
+    const names = (list) => [...new Set(list.map((task) => task.title))].slice(0, 3).join(", ");
+    const plural = (count, word) => `${count} ${word}${count === 1 ? "" : "s"}`;
 
     return [
-      ...(issueCount > 0 ? [{ type: "issue", message: `Issue ${issueCount}`, taskId: "issues" }] : []),
-      ...(overdueCount > 0 ? [{ type: "overdue", message: `Overdue ${overdueCount}`, taskId: "overdue" }] : []),
-      ...(conflictCount > 0 ? [{ type: "conflict", message: `Conflict ${conflictCount}`, taskId: "conflict" }] : []),
+      ...(absent.length > 0 ? [{ type: "absence", message: `${plural(absent.length, "activity")} planned on people who are booked off: ${[...new Set(absent.map((task) => task.person))].join(", ")}`, taskId: "absence" }] : []),
+      ...(issues.length > 0 ? [{ type: "issue", message: `${plural(issues.length, "open issue")}: ${names(issues)}`, taskId: "issues" }] : []),
+      ...(conflicts.length > 0 ? [{ type: "conflict", message: `${plural(conflicts.length, "overlapping activity")}: ${names(conflicts)}`, taskId: "conflict" }] : []),
+      ...(overdue.length > 0 ? [{ type: "overdue", message: `${plural(overdue.length, "overdue activity")}: ${names(overdue)}`, taskId: "overdue" }] : []),
     ];
-  }, [taskConflictMap, tasks]);
+  }, [taskConflictMap, tasks, teamAbsences, teamMembers]);
 
   const visibleBoardTasks = useMemo(() => {
     if (currentRole !== "cleaner") return filteredVisibleTasks;
@@ -3161,16 +3166,18 @@ export default function StandardWorkBoard() {
           )}
 
           {operationalAlerts.length > 0 && (
-            <div className="border-b border-slate-200 bg-amber-50 p-4">
-              <div className="flex flex-wrap items-center gap-2">
-                <span className="rounded-full bg-amber-100 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.14em] text-amber-800">Ops alerts</span>
+            <div className="border-b border-rose-200 bg-rose-50 p-4">
+              <div className="mb-2 flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.14em] text-rose-800">
+                <AlertTriangle size={14} /> Needs attention
+              </div>
+              <div className="flex flex-col gap-1.5">
                 {operationalAlerts.map((alert, index) => (
-                  <span
+                  <div
                     key={`${alert.type}-${alert.taskId}-${index}`}
-                    className={`rounded-full border px-2.5 py-1 text-[10px] font-medium ${alert.type === "issue" ? "border-rose-200 bg-rose-100 text-rose-800" : alert.type === "overdue" ? "border-orange-200 bg-orange-100 text-orange-800" : "border-sky-200 bg-sky-100 text-sky-800"}`}
+                    className={`rounded-lg border px-3 py-1.5 text-xs font-medium ${alert.type === "absence" ? "border-rose-300 bg-rose-100 text-rose-900" : alert.type === "issue" ? "border-rose-200 bg-white text-rose-800" : alert.type === "overdue" ? "border-orange-200 bg-orange-50 text-orange-800" : "border-sky-200 bg-sky-50 text-sky-800"}`}
                   >
                     {alert.message}
-                  </span>
+                  </div>
                 ))}
               </div>
             </div>
