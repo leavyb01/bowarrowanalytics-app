@@ -299,6 +299,11 @@ export default function StandardWorkBoard() {
   const [showCreate, setShowCreate] = useState(false);
   const [editingTaskId, setEditingTaskId] = useState(null);
   const [templateQuery, setTemplateQuery] = useState("");
+  const [teamMembers, setTeamMembers] = useState([]);
+  const [teamAbsences, setTeamAbsences] = useState([]);
+  const [memberForm, setMemberForm] = useState({ name: "", role: "" });
+  const [absenceForm, setAbsenceForm] = useState({ memberId: "", type: "holiday", start: formatDateISO(new Date()), end: formatDateISO(new Date()), note: "" });
+  const [teamStart, setTeamStart] = useState(() => formatDateISO(new Date()));
   const [showIssue, setShowIssue] = useState(false);
   const [currentPage, setCurrentPage] = useState("board");
   const [session, setSession] = useState(null);
@@ -468,6 +473,63 @@ export default function StandardWorkBoard() {
       }
     }
   }, []);
+
+  useEffect(() => {
+    let isMounted = true;
+    setTeamMembers([]);
+    setTeamAbsences([]);
+    if (!hasSupabase || !supabase || demoAccess || !activeOrgId) return undefined;
+
+    const loadTeam = async () => {
+      const [membersResult, absencesResult] = await Promise.all([
+        supabase.from("team_members").select("*").eq("org_id", activeOrgId).order("name"),
+        supabase.from("team_absences").select("*").eq("org_id", activeOrgId).order("start_date"),
+      ]);
+      if (!isMounted) return;
+      if (membersResult.error || absencesResult.error) {
+        setSyncMessage("Could not load the team list. Make sure the team tables have been created in Supabase.");
+        return;
+      }
+      setTeamMembers(membersResult.data || []);
+      setTeamAbsences(absencesResult.data || []);
+    };
+
+    loadTeam();
+    return () => {
+      isMounted = false;
+    };
+  }, [activeOrgId, demoAccess]);
+
+  useEffect(() => {
+    if (!hasSupabase || !supabase || demoAccess || !activeOrgId) return undefined;
+
+    const channel = supabase
+      .channel(`team-live-${activeOrgId}`)
+      .on("postgres_changes", { event: "*", schema: "public", table: "team_members", filter: `org_id=eq.${activeOrgId}` }, (payload) => {
+        if (payload.eventType === "DELETE") {
+          setTeamMembers((current) => current.filter((member) => member.id !== payload.old.id));
+          setTeamAbsences((current) => current.filter((absence) => absence.member_id !== payload.old.id));
+          return;
+        }
+        setTeamMembers((current) => (current.some((m) => m.id === payload.new.id)
+          ? current.map((m) => (m.id === payload.new.id ? payload.new : m))
+          : [...current, payload.new]));
+      })
+      .on("postgres_changes", { event: "*", schema: "public", table: "team_absences", filter: `org_id=eq.${activeOrgId}` }, (payload) => {
+        if (payload.eventType === "DELETE") {
+          setTeamAbsences((current) => current.filter((absence) => absence.id !== payload.old.id));
+          return;
+        }
+        setTeamAbsences((current) => (current.some((a) => a.id === payload.new.id)
+          ? current.map((a) => (a.id === payload.new.id ? payload.new : a))
+          : [...current, payload.new]));
+      })
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [activeOrgId, demoAccess]);
 
   useEffect(() => {
     let isMounted = true;
@@ -1553,6 +1615,15 @@ export default function StandardWorkBoard() {
       return;
     }
 
+    const assignee = teamMembers.find((member) => member.name.trim().toLowerCase() === form.person.trim().toLowerCase());
+    if (assignee) {
+      const startKey = form.start.slice(0, 10);
+      const absence = absenceFor(assignee.id, startKey);
+      if (absence && !window.confirm(`${assignee.name} is marked as ${absenceTypes[absence.type]?.label.toLowerCase() || "away"} on ${startKey}. Assign this activity anyway?`)) {
+        return;
+      }
+    }
+
     if (editingTaskId !== null) {
       const existing = tasks.find((task) => task.id === editingTaskId);
       if (!existing) {
@@ -1915,6 +1986,271 @@ export default function StandardWorkBoard() {
 
     return tableMap[kpiFocus] || tableMap.overall;
   })();
+
+  const canManageTeam = ["admin", "manager", "operations"].includes(currentRole);
+  const useLocalTeam = !hasSupabase || !supabase || demoAccess;
+  const absenceTypes = {
+    holiday: { label: "Holiday", cell: "bg-sky-200 text-sky-900" },
+    sick: { label: "Sick", cell: "bg-rose-200 text-rose-900" },
+    absent: { label: "Absent", cell: "bg-amber-200 text-amber-900" },
+    other: { label: "Other leave", cell: "bg-violet-200 text-violet-900" },
+  };
+
+  const addTeamMember = async () => {
+    const name = memberForm.name.trim();
+    if (!name) {
+      setNotice("Enter a name for the team member.");
+      return;
+    }
+    if (teamMembers.some((member) => member.name.toLowerCase() === name.toLowerCase())) {
+      setNotice("That person is already on the team.");
+      return;
+    }
+    const role = memberForm.role.trim() || null;
+    if (useLocalTeam) {
+      setTeamMembers((current) => [...current, { id: `local-${Date.now()}`, name, role }]);
+    } else {
+      const { data, error } = await supabase.from("team_members").insert({ org_id: activeOrgId, name, role }).select().single();
+      if (error) {
+        setNotice("Could not add the team member. Check your permissions.");
+        return;
+      }
+      setTeamMembers((current) => (current.some((m) => m.id === data.id) ? current : [...current, data]));
+    }
+    setMemberForm({ name: "", role: "" });
+    setNotice(`${name} added to the team.`);
+    setTimeout(() => setNotice(""), 2200);
+  };
+
+  const deleteTeamMember = async (member) => {
+    if (!window.confirm(`Remove ${member.name} from the team? Their absences will also be removed.`)) return;
+    if (!useLocalTeam) {
+      const { error } = await supabase.from("team_members").delete().eq("id", member.id).eq("org_id", activeOrgId);
+      if (error) {
+        setNotice("Could not remove the team member.");
+        return;
+      }
+    }
+    setTeamMembers((current) => current.filter((item) => item.id !== member.id));
+    setTeamAbsences((current) => current.filter((absence) => absence.member_id !== member.id));
+  };
+
+  const addAbsence = async () => {
+    if (!absenceForm.memberId || !absenceForm.start || !absenceForm.end) {
+      setNotice("Choose a person and a start and end date.");
+      return;
+    }
+    if (absenceForm.end < absenceForm.start) {
+      setNotice("The end date must be on or after the start date.");
+      return;
+    }
+    const record = {
+      member_id: absenceForm.memberId,
+      type: absenceForm.type,
+      start_date: absenceForm.start,
+      end_date: absenceForm.end,
+      note: absenceForm.note.trim() || null,
+    };
+    if (useLocalTeam) {
+      setTeamAbsences((current) => [...current, { id: `local-${Date.now()}`, ...record }]);
+    } else {
+      const { data, error } = await supabase.from("team_absences").insert({ ...record, org_id: activeOrgId }).select().single();
+      if (error) {
+        setNotice("Could not save the absence. Check your permissions.");
+        return;
+      }
+      setTeamAbsences((current) => (current.some((a) => a.id === data.id) ? current : [...current, data]));
+    }
+    setAbsenceForm((current) => ({ ...current, note: "" }));
+    setNotice("Absence recorded.");
+    setTimeout(() => setNotice(""), 2200);
+  };
+
+  const deleteAbsence = async (absence) => {
+    if (!useLocalTeam) {
+      const { error } = await supabase.from("team_absences").delete().eq("id", absence.id).eq("org_id", activeOrgId);
+      if (error) {
+        setNotice("Could not remove the absence.");
+        return;
+      }
+    }
+    setTeamAbsences((current) => current.filter((item) => item.id !== absence.id));
+  };
+
+  const absenceFor = (memberId, dateKey) => teamAbsences.find(
+    (absence) => absence.member_id === memberId && absence.start_date <= dateKey && absence.end_date >= dateKey,
+  );
+
+  const renderTeamPage = () => {
+    const days = Array.from({ length: 14 }, (_, index) => {
+      const date = dateValue(teamStart);
+      date.setDate(date.getDate() + index);
+      return date;
+    });
+    const shiftTeamStart = (delta) => {
+      const date = dateValue(teamStart);
+      date.setDate(date.getDate() + delta);
+      setTeamStart(formatDateISO(date));
+    };
+    const todayIso = formatDateISO(new Date());
+    const memberName = (id) => teamMembers.find((member) => member.id === id)?.name || "Unknown";
+    const upcomingAbsences = [...teamAbsences]
+      .filter((absence) => absence.end_date >= todayIso)
+      .sort((a, b) => a.start_date.localeCompare(b.start_date));
+    const inputClass = "mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700 outline-none focus:border-emerald-700";
+
+    return (
+      <main className="mx-auto max-w-[1700px] space-y-6 p-6">
+        {notice && (
+          <div className="rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-800">{notice}</div>
+        )}
+
+        <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+          <div className="mb-4 flex items-center justify-between gap-3">
+            <div>
+              <h2 className="text-lg font-semibold text-slate-900">Capacity outlook</h2>
+              <p className="mt-1 text-sm text-slate-500">Who is available over the next two weeks{activeOrgName ? ` at ${activeOrgName}` : ""}.</p>
+            </div>
+            <div className="flex items-center gap-2">
+              <button type="button" onClick={() => shiftTeamStart(-14)} className="rounded-lg border border-slate-300 p-2 hover:bg-slate-50" aria-label="Previous two weeks"><ChevronLeft size={16} /></button>
+              <button type="button" onClick={() => setTeamStart(todayIso)} className="rounded-lg border border-slate-300 px-3 py-2 text-xs font-semibold uppercase tracking-[0.12em] text-slate-700 hover:bg-slate-50">Today</button>
+              <button type="button" onClick={() => shiftTeamStart(14)} className="rounded-lg border border-slate-300 p-2 hover:bg-slate-50" aria-label="Next two weeks"><ChevronRight size={16} /></button>
+            </div>
+          </div>
+
+          {teamMembers.length === 0 ? (
+            <p className="rounded-xl border border-dashed border-slate-300 p-6 text-center text-sm text-slate-500">No team members yet. Add your first person below.</p>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full min-w-[900px] border-separate border-spacing-1 text-xs">
+                <thead>
+                  <tr>
+                    <th className="w-40 text-left font-semibold uppercase tracking-[0.12em] text-slate-500">Team member</th>
+                    {days.map((date) => (
+                      <th key={formatDateISO(date)} className={`rounded-md px-1 py-1 text-center font-semibold ${formatDateISO(date) === todayIso ? "bg-amber-100 text-amber-900" : "text-slate-500"}`}>
+                        {date.toLocaleDateString([], { weekday: "short" })}
+                        <span className="block font-normal">{date.getDate()}/{date.getMonth() + 1}</span>
+                      </th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {teamMembers.map((member) => (
+                    <tr key={member.id}>
+                      <td className="py-1 pr-2 text-sm font-semibold text-slate-800">{member.name}{member.role && <span className="block text-[11px] font-normal text-slate-500">{member.role}</span>}</td>
+                      {days.map((date) => {
+                        const key = formatDateISO(date);
+                        const absence = absenceFor(member.id, key);
+                        return (
+                          <td
+                            key={key}
+                            title={absence ? `${absenceTypes[absence.type]?.label || absence.type}${absence.note ? `: ${absence.note}` : ""}` : "Available"}
+                            className={`rounded-md py-2 text-center font-semibold ${absence ? absenceTypes[absence.type]?.cell || absenceTypes.other.cell : "bg-emerald-50 text-emerald-700"}`}
+                          >
+                            {absence ? (absenceTypes[absence.type]?.label || "Away").slice(0, 3) : "✓"}
+                          </td>
+                        );
+                      })}
+                    </tr>
+                  ))}
+                  <tr>
+                    <td className="pt-2 text-sm font-semibold text-slate-800">Available</td>
+                    {days.map((date) => {
+                      const key = formatDateISO(date);
+                      const available = teamMembers.filter((member) => !absenceFor(member.id, key)).length;
+                      return (
+                        <td key={key} className={`rounded-md pt-2 text-center text-sm font-bold ${available === teamMembers.length ? "text-emerald-700" : available === 0 ? "text-rose-700" : "text-amber-700"}`}>
+                          {available}/{teamMembers.length}
+                        </td>
+                      );
+                    })}
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          )}
+
+          <div className="mt-4 flex flex-wrap gap-4 text-xs text-slate-600">
+            {Object.values(absenceTypes).map((item) => (
+              <span key={item.label} className="flex items-center gap-2"><span className={`h-3 w-3 rounded ${item.cell}`} />{item.label}</span>
+            ))}
+          </div>
+        </section>
+
+        <div className="grid gap-6 lg:grid-cols-2">
+          <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+            <h2 className="text-lg font-semibold text-slate-900">Team members</h2>
+            <div className="mt-4 grid gap-3 sm:grid-cols-[1fr_1fr_auto] sm:items-end">
+              <label className="text-xs font-medium uppercase tracking-[0.12em] text-slate-500">Name
+                <input value={memberForm.name} onChange={(e) => setMemberForm({ ...memberForm, name: e.target.value })} onKeyDown={(e) => e.key === "Enter" && addTeamMember()} className={inputClass} />
+              </label>
+              <label className="text-xs font-medium uppercase tracking-[0.12em] text-slate-500">Role (optional)
+                <input value={memberForm.role} onChange={(e) => setMemberForm({ ...memberForm, role: e.target.value })} onKeyDown={(e) => e.key === "Enter" && addTeamMember()} className={inputClass} />
+              </label>
+              <button type="button" onClick={addTeamMember} className="inline-flex items-center justify-center gap-2 rounded-xl bg-[#103c2d] px-4 py-2.5 text-sm font-semibold text-white hover:bg-emerald-900">
+                <Plus size={16} /> Add
+              </button>
+            </div>
+            <ul className="mt-4 divide-y divide-slate-100">
+              {teamMembers.map((member) => (
+                <li key={member.id} className="flex items-center justify-between gap-3 py-2">
+                  <span className="text-sm text-slate-800"><b>{member.name}</b>{member.role && <span className="text-slate-500"> · {member.role}</span>}</span>
+                  <button type="button" onClick={() => deleteTeamMember(member)} className="inline-flex items-center gap-1 rounded-lg border border-rose-200 bg-rose-50 px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.12em] text-rose-700 hover:bg-rose-100">
+                    <Trash2 size={12} /> Delete
+                  </button>
+                </li>
+              ))}
+            </ul>
+          </section>
+
+          <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+            <h2 className="text-lg font-semibold text-slate-900">Holidays and absence</h2>
+            <div className="mt-4 grid gap-3 sm:grid-cols-2">
+              <label className="text-xs font-medium uppercase tracking-[0.12em] text-slate-500">Person
+                <select value={absenceForm.memberId} onChange={(e) => setAbsenceForm({ ...absenceForm, memberId: e.target.value })} className={inputClass}>
+                  <option value="">Choose...</option>
+                  {teamMembers.map((member) => <option key={member.id} value={member.id}>{member.name}</option>)}
+                </select>
+              </label>
+              <label className="text-xs font-medium uppercase tracking-[0.12em] text-slate-500">Type
+                <select value={absenceForm.type} onChange={(e) => setAbsenceForm({ ...absenceForm, type: e.target.value })} className={inputClass}>
+                  {Object.entries(absenceTypes).map(([key, item]) => <option key={key} value={key}>{item.label}</option>)}
+                </select>
+              </label>
+              <label className="text-xs font-medium uppercase tracking-[0.12em] text-slate-500">From
+                <input type="date" value={absenceForm.start} onChange={(e) => setAbsenceForm({ ...absenceForm, start: e.target.value, end: absenceForm.end < e.target.value ? e.target.value : absenceForm.end })} className={inputClass} />
+              </label>
+              <label className="text-xs font-medium uppercase tracking-[0.12em] text-slate-500">To (inclusive)
+                <input type="date" value={absenceForm.end} min={absenceForm.start} onChange={(e) => setAbsenceForm({ ...absenceForm, end: e.target.value })} className={inputClass} />
+              </label>
+              <label className="text-xs font-medium uppercase tracking-[0.12em] text-slate-500 sm:col-span-2">Note (optional)
+                <input value={absenceForm.note} onChange={(e) => setAbsenceForm({ ...absenceForm, note: e.target.value })} className={inputClass} />
+              </label>
+            </div>
+            <button type="button" onClick={addAbsence} className="mt-4 w-full rounded-xl bg-[#103c2d] px-4 py-2.5 text-sm font-semibold text-white hover:bg-emerald-900">Record absence</button>
+
+            <h3 className="mt-6 text-sm font-semibold uppercase tracking-[0.12em] text-slate-500">Current and upcoming</h3>
+            {upcomingAbsences.length === 0 ? (
+              <p className="mt-2 text-sm text-slate-500">No absences recorded.</p>
+            ) : (
+              <ul className="mt-2 divide-y divide-slate-100">
+                {upcomingAbsences.map((absence) => (
+                  <li key={absence.id} className="flex items-center justify-between gap-3 py-2 text-sm">
+                    <span className="text-slate-800">
+                      <b>{memberName(absence.member_id)}</b>
+                      <span className={`ml-2 rounded-full px-2 py-0.5 text-[11px] font-semibold ${absenceTypes[absence.type]?.cell || absenceTypes.other.cell}`}>{absenceTypes[absence.type]?.label || absence.type}</span>
+                      <span className="block text-xs text-slate-500">{absence.start_date} to {absence.end_date}{absence.note ? ` · ${absence.note}` : ""}</span>
+                    </span>
+                    <button type="button" onClick={() => deleteAbsence(absence)} className="rounded-lg border border-slate-300 p-1.5 text-slate-600 hover:bg-slate-50" aria-label="Remove absence"><X size={14} /></button>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </section>
+        </div>
+      </main>
+    );
+  };
 
   const renderPerformancePage = () => {
     const teamPlannedTotal = teamPerformanceRows.reduce((sum, row) => sum + row.plannedCount, 0);
@@ -2596,6 +2932,11 @@ export default function StandardWorkBoard() {
                   Team Performance
                 </button>
               )}
+              {canManageTeam && (
+                <button onClick={() => setCurrentPage("team")} className={`rounded-md px-3 py-1.5 text-[10px] font-semibold uppercase tracking-[0.14em] ${currentPage === "team" ? "bg-lime-300 text-[#103c2d]" : "text-white/80"}`}>
+                  Team
+                </button>
+              )}
             </div>
             {currentPage === "board" && canAddWorkItem && (
               <button onClick={() => setShowCreate(true)} className="flex items-center gap-2 rounded-xl bg-lime-300 px-4 py-2.5 font-semibold text-[#103c2d] shadow-sm hover:bg-lime-200">
@@ -2659,6 +3000,8 @@ export default function StandardWorkBoard() {
 
       {settingsOpen && canManageSettings ? (
         renderSettingsPage()
+      ) : currentPage === "team" && canManageTeam ? (
+        renderTeamPage()
       ) : currentPage === "kpis" ? (
         renderKpiPage()
       ) : currentPage === "performance" ? (
