@@ -64,7 +64,27 @@ from candidates c
 join public.organisations o on o.id = c.org_id
 on conflict (org_id, user_id) do nothing;
 
--- 4. Helper functions used by the policies
+-- 4. Global (platform) admins can open and administer every organisation
+create table if not exists public.platform_admins (
+  user_id uuid primary key references auth.users(id) on delete cascade,
+  created_at timestamptz not null default now()
+);
+alter table public.platform_admins enable row level security;
+drop policy if exists "platform_admins_select_own" on public.platform_admins;
+create policy "platform_admins_select_own" on public.platform_admins
+for select to authenticated using (user_id = auth.uid());
+
+create or replace function public.is_platform_admin()
+returns boolean
+language sql
+stable
+security definer
+set search_path = public
+as $$
+  select exists (select 1 from public.platform_admins where user_id = auth.uid());
+$$;
+
+-- Helper functions used by the policies
 create or replace function public.is_org_member(target text)
 returns boolean
 language sql
@@ -72,7 +92,7 @@ stable
 security definer
 set search_path = public
 as $$
-  select exists (
+  select public.is_platform_admin() or exists (
     select 1 from public.organisation_memberships m
     where m.org_id::text = target and m.user_id = auth.uid() and m.status = 'active'
   );
@@ -85,7 +105,7 @@ stable
 security definer
 set search_path = public
 as $$
-  select exists (
+  select public.is_platform_admin() or exists (
     select 1 from public.organisation_memberships m
     where m.org_id::text = target and m.user_id = auth.uid() and m.status = 'active'
       and m.role in ('admin', 'org_admin', 'super_admin', 'manager', 'operations', 'cleaner')
@@ -99,7 +119,7 @@ stable
 security definer
 set search_path = public
 as $$
-  select exists (
+  select public.is_platform_admin() or exists (
     select 1 from public.organisation_memberships m
     where m.org_id::text = target and m.user_id = auth.uid() and m.status = 'active'
       and m.role in ('admin', 'org_admin', 'super_admin')
@@ -194,6 +214,12 @@ begin
   alter publication supabase_realtime add table public.standard_work_resources;
 exception when duplicate_object then null;
 end $$;
+
+-- 7a. Make yourself a global admin (replace the email), then you can pick any organisation
+--
+-- insert into public.platform_admins (user_id)
+-- select id from public.profiles where email = 'bryan@bowarrowanalytics.ie'
+-- on conflict do nothing;
 
 -- 7. Giving people access (run per person; replace the email and organisation slug)
 -- Roles: admin, manager, operations, cleaner, viewer
