@@ -298,6 +298,7 @@ export default function StandardWorkBoard() {
   const [selectedTask, setSelectedTask] = useState(null);
   const [showCreate, setShowCreate] = useState(false);
   const [editingTaskId, setEditingTaskId] = useState(null);
+  const [templateQuery, setTemplateQuery] = useState("");
   const [showIssue, setShowIssue] = useState(false);
   const [currentPage, setCurrentPage] = useState("board");
   const [session, setSession] = useState(null);
@@ -1508,6 +1509,42 @@ export default function StandardWorkBoard() {
   const closeTaskForm = () => {
     setShowCreate(false);
     setEditingTaskId(null);
+    setTemplateQuery("");
+  };
+
+  const pastTemplates = useMemo(() => {
+    const seen = new Map();
+    [...tasks]
+      .filter((task) => task.type !== "issue" && task.status !== "issue")
+      .sort((a, b) => new Date(b.start).getTime() - new Date(a.start).getTime())
+      .forEach((task) => {
+        const key = `${task.title}|${task.type}|${task.person}|${task.resourceId}`.toLowerCase();
+        if (!seen.has(key)) seen.set(key, task);
+      });
+    return [...seen.values()];
+  }, [tasks]);
+
+  const matchingTemplates = useMemo(() => {
+    const needle = templateQuery.trim().toLowerCase();
+    if (!needle) return [];
+    return pastTemplates
+      .filter((task) => `${task.title} ${task.person} ${task.note} ${typeLabels[task.type] || task.type}`.toLowerCase().includes(needle))
+      .slice(0, 6);
+  }, [pastTemplates, templateQuery, typeLabels]);
+
+  const applyTemplate = (task) => {
+    const durationMs = Math.max(new Date(task.end).getTime() - new Date(task.start).getTime(), 15 * 60 * 1000);
+    const startMs = new Date(form.start).getTime();
+    setForm((current) => ({
+      ...current,
+      resourceId: resources.some((resource) => resource.id === task.resourceId) ? task.resourceId : current.resourceId,
+      title: task.title,
+      type: workTypes.some((type) => type.id === task.type) ? task.type : current.type,
+      person: task.person,
+      note: task.note || "",
+      end: Number.isNaN(startMs) ? current.end : toDateTimeInputValue(startMs + durationMs),
+    }));
+    setTemplateQuery("");
   };
 
   const addTask = async () => {
@@ -3157,6 +3194,45 @@ export default function StandardWorkBoard() {
               </div>
               <button onClick={closeTaskForm} className="rounded-lg p-2 hover:bg-slate-100"><X size={18} /></button>
             </div>
+
+            {editingTaskId === null && (
+              <div className="mt-5">
+                <label className="text-sm text-slate-700">
+                  Reuse a previous activity
+                  <div className="relative mt-1">
+                    <Search size={16} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+                    <input
+                      value={templateQuery}
+                      onChange={(e) => setTemplateQuery(e.target.value)}
+                      placeholder="Search by name, person, type or notes..."
+                      className="w-full rounded-lg border p-2.5 pl-9"
+                    />
+                  </div>
+                </label>
+                {templateQuery.trim() && (
+                  <div className="mt-2 max-h-48 overflow-auto rounded-lg border border-slate-200 bg-white">
+                    {matchingTemplates.length === 0 ? (
+                      <p className="px-3 py-2 text-sm text-slate-500">No previous activities match.</p>
+                    ) : (
+                      matchingTemplates.map((task) => (
+                        <button
+                          key={task.id}
+                          type="button"
+                          onClick={() => applyTemplate(task)}
+                          className="flex w-full items-center justify-between gap-3 border-b border-slate-100 px-3 py-2 text-left text-sm last:border-b-0 hover:bg-emerald-50"
+                        >
+                          <span>
+                            <span className="font-semibold text-slate-800">{task.title}</span>
+                            <span className="block text-xs text-slate-500">{typeLabels[task.type] || task.type} · {task.person}</span>
+                          </span>
+                          <span className="text-xs text-slate-500">{formatMinutes(Math.round((new Date(task.end) - new Date(task.start)) / 60000))}</span>
+                        </button>
+                      ))
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
 
             <div className="mt-5 grid gap-4 sm:grid-cols-2">
               <label className="text-sm text-slate-700">Resource<select value={form.resourceId} onChange={(e) => setForm({ ...form, resourceId: e.target.value })} className="mt-1 w-full rounded-lg border p-2.5">{resources.map((resource) => <option key={resource.id} value={resource.id}>{resource.name}</option>)}</select></label>
