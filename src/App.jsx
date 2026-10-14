@@ -3632,18 +3632,6 @@ export default function StandardWorkBoard() {
       </main>
 
       {notice && <div className="fixed bottom-5 right-5 rounded-xl bg-slate-900 px-4 py-3 text-sm text-white shadow-xl">{notice}</div>}
-      {confirmDialog && (
-        <div className="fixed inset-0 z-[100] grid place-items-center bg-slate-900/50 p-4" onClick={() => answerConfirm(false)}>
-          <div role="alertdialog" aria-modal="true" className="w-full max-w-md rounded-2xl bg-white p-6 shadow-2xl" onClick={(event) => event.stopPropagation()}>
-            <h3 className="text-lg font-semibold text-slate-900">{confirmDialog.title}</h3>
-            <p className="mt-2 text-sm text-slate-600">{confirmDialog.message}</p>
-            <div className="mt-6 flex justify-end gap-2">
-              <button type="button" autoFocus onClick={() => answerConfirm(false)} className="rounded-xl border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50">Cancel</button>
-              <button type="button" onClick={() => answerConfirm(true)} className={`rounded-xl px-4 py-2 text-sm font-semibold text-white ${confirmDialog.danger ? "bg-rose-600 hover:bg-rose-700" : "bg-[#103c2d] hover:bg-emerald-900"}`}>{confirmDialog.confirmLabel || "Confirm"}</button>
-            </div>
-          </div>
-        </div>
-      )}
 
       {pendingMove && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/40 p-4" onClick={() => setPendingMove(null)}>
@@ -3886,6 +3874,18 @@ export default function StandardWorkBoard() {
         </div>
       )}
        </>
+      )}
+      {confirmDialog && (
+        <div className="fixed inset-0 z-[100] grid place-items-center bg-slate-900/50 p-4" onClick={() => answerConfirm(false)}>
+          <div role="alertdialog" aria-modal="true" className="w-full max-w-md rounded-2xl bg-white p-6 shadow-2xl" onClick={(event) => event.stopPropagation()}>
+            <h3 className="text-lg font-semibold text-slate-900">{confirmDialog.title}</h3>
+            <p className="mt-2 text-sm text-slate-600">{confirmDialog.message}</p>
+            <div className="mt-6 flex justify-end gap-2">
+              <button type="button" autoFocus onClick={() => answerConfirm(false)} className="rounded-xl border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50">Cancel</button>
+              <button type="button" onClick={() => answerConfirm(true)} className={`rounded-xl px-4 py-2 text-sm font-semibold text-white ${confirmDialog.danger ? "bg-rose-600 hover:bg-rose-700" : "bg-[#103c2d] hover:bg-emerald-900"}`}>{confirmDialog.confirmLabel || "Confirm"}</button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );
