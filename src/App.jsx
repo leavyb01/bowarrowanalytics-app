@@ -301,8 +301,13 @@ export default function StandardWorkBoard() {
   const [templateQuery, setTemplateQuery] = useState("");
   const [teamMembers, setTeamMembers] = useState([]);
   const [teamAbsences, setTeamAbsences] = useState([]);
-  const [memberForm, setMemberForm] = useState({ name: "", role: "" });
-  const [absenceForm, setAbsenceForm] = useState({ memberId: "", type: "holiday", start: formatDateISO(new Date()), end: formatDateISO(new Date()), note: "" });
+  const emptyMemberForm = { name: "", role: "", startDate: "", allowance: "" };
+  const [memberForm, setMemberForm] = useState(emptyMemberForm);
+  const [editingMemberId, setEditingMemberId] = useState(null);
+  const [absenceForm, setAbsenceForm] = useState({ memberId: "", type: "holiday", dayPart: "full", start: formatDateISO(new Date()), end: formatDateISO(new Date()), note: "" });
+  const [reviewYear, setReviewYear] = useState(new Date().getFullYear());
+  const [reviewMemberId, setReviewMemberId] = useState("all");
+  const [isPlatformAdmin, setIsPlatformAdmin] = useState(false);
   const [teamStart, setTeamStart] = useState(() => formatDateISO(new Date()));
   const [showIssue, setShowIssue] = useState(false);
   const [currentPage, setCurrentPage] = useState("board");
@@ -772,6 +777,7 @@ export default function StandardWorkBoard() {
 
     if (!hasSupabase || !supabase || demoAccess || !sessionUserId) {
       setMemberships([]);
+      setIsPlatformAdmin(false);
       setActiveOrgId(null);
       setMembershipsLoadedFor(null);
       return undefined;
@@ -791,6 +797,7 @@ export default function StandardWorkBoard() {
 
       let rows = membershipResult.error ? [] : (membershipResult.data || []).filter((row) => row.organisations);
 
+      setIsPlatformAdmin(Boolean(adminResult.data));
       if (adminResult.data) {
         const { data: allOrgs } = await supabase.from("organisations").select("id, name, slug").order("name");
         if (!isMounted) return;
@@ -1084,12 +1091,19 @@ export default function StandardWorkBoard() {
     return Math.round(roomUtilRows.reduce((sum, row) => sum + row.utilisation, 0) / roomUtilRows.length);
   }, [roomUtilRows]);
 
-  const normalizeRole = (role) => (["org_admin", "super_admin", "site_admin"].includes(role) ? "admin" : role);
+  const normalizeRole = (role) => {
+    if (["org_admin", "super_admin", "site_admin"].includes(role)) return "admin";
+    if (role === "cleaner") return "operations";
+    return role;
+  };
   const membershipRole = activeMembership ? normalizeRole(activeMembership.role) : null;
   const isRealSession = hasSupabase && !demoAccess;
-  const canPreviewRoles = demoAccess || membershipRole === "admin";
+  const canPreviewRoles = demoAccess || isPlatformAdmin;
   const currentRole = (canPreviewRoles && demoRoleOverride)
     || (isRealSession ? (membershipRole || "viewer") : "admin");
+  const roleLabel = isPlatformAdmin && !demoRoleOverride
+    ? "Global Admin"
+    : { admin: "Admin", manager: "Manager", operations: "Daily Operations" }[currentRole] || "No access";
   const cleanerDisplayName = useMemo(() => {
     const candidateNames = [
       profile?.name,
@@ -1142,9 +1156,9 @@ export default function StandardWorkBoard() {
   const isAuthenticated = Boolean(session || demoAccess);
   const isAdmin = currentRole === "admin";
   const canManageSettings = isAdmin;
-  const canAddWorkItem = ["admin", "manager", "operations", "cleaner"].includes(currentRole);
-  const canEditTasks = ["admin", "manager", "operations", "cleaner"].includes(currentRole);
-  const canViewKpis = ["admin", "manager", "operations"].includes(currentRole);
+  const canAddWorkItem = ["admin", "manager", "operations"].includes(currentRole);
+  const canEditTasks = ["admin", "manager", "operations"].includes(currentRole);
+  const canViewKpis = ["admin", "manager"].includes(currentRole);
   const canViewPerformance = ["admin", "manager"].includes(currentRole);
 
   const handleDemoAccess = () => {
@@ -2002,7 +2016,7 @@ export default function StandardWorkBoard() {
     return tableMap[kpiFocus] || tableMap.overall;
   })();
 
-  const canManageTeam = ["admin", "manager", "operations"].includes(currentRole);
+  const canManageTeam = ["admin", "manager"].includes(currentRole);
   const useLocalTeam = !hasSupabase || !supabase || demoAccess;
   const absenceTypes = {
     holiday: { label: "Holiday", cell: "bg-sky-200 text-sky-900" },
@@ -2011,28 +2025,130 @@ export default function StandardWorkBoard() {
     other: { label: "Other leave", cell: "bg-violet-200 text-violet-900" },
   };
 
+  const parseIso = (iso) => {
+    const [year, month, day] = String(iso).split("-").map(Number);
+    return new Date(year, month - 1, day);
+  };
+
+  const absenceDayValue = (absence) => (absence.day_part && absence.day_part !== "full" ? 0.5 : 1);
+  const dayPartLabels = { full: "Full day", am: "Morning", pm: "Afternoon" };
+
+  // Counts Monday to Friday days of an absence, optionally limited to a date window.
+  const countAbsenceDays = (absence, from, to) => {
+    let total = 0;
+    const end = parseIso(absence.end_date);
+    for (let cursor = parseIso(absence.start_date); cursor <= end; cursor.setDate(cursor.getDate() + 1)) {
+      const key = formatDateISO(cursor);
+      if ((from && key < from) || (to && key > to)) continue;
+      if (cursor.getDay() === 0 || cursor.getDay() === 6) continue;
+      total += absenceDayValue(absence);
+    }
+    return total;
+  };
+
+  const formatDays = (value) => (Number.isInteger(value) ? String(value) : value.toFixed(1));
+
+  const serviceLabel = (startDate) => {
+    if (!startDate) return "";
+    const start = parseIso(startDate);
+    const now = new Date();
+    if (start > now) return `Starts ${start.toLocaleDateString("en-GB")}`;
+    let months = (now.getFullYear() - start.getFullYear()) * 12 + now.getMonth() - start.getMonth();
+    if (now.getDate() < start.getDate()) months -= 1;
+    months = Math.max(months, 0);
+    const years = Math.floor(months / 12);
+    const rest = months % 12;
+    const parts = [];
+    if (years) parts.push(`${years} yr${years === 1 ? "" : "s"}`);
+    if (rest) parts.push(`${rest} mo${rest === 1 ? "" : "s"}`);
+    return parts.length ? parts.join(" ") : "Under 1 month";
+  };
+
+  const holidayStats = (member, year) => {
+    const todayKey = formatDateISO(new Date());
+    const yearStart = `${year}-01-01`;
+    const yearEnd = `${year}-12-31`;
+    const yesterday = parseIso(todayKey);
+    yesterday.setDate(yesterday.getDate() - 1);
+    const yesterdayKey = formatDateISO(yesterday);
+    const holidays = teamAbsences.filter((absence) => absence.member_id === member.id && absence.type === "holiday");
+    const taken = holidays.reduce((sum, absence) => sum + countAbsenceDays(absence, yearStart, yesterdayKey < yearEnd ? yesterdayKey : yearEnd), 0);
+    const booked = holidays.reduce((sum, absence) => sum + countAbsenceDays(absence, todayKey > yearStart ? todayKey : yearStart, yearEnd), 0);
+    const allowance = member.holiday_allowance === null || member.holiday_allowance === undefined || member.holiday_allowance === "" ? null : Number(member.holiday_allowance);
+    return { taken, booked, allowance, remaining: allowance === null ? null : allowance - taken - booked };
+  };
+
+  const startEditMember = (member) => {
+    setEditingMemberId(member.id);
+    setMemberForm({
+      name: member.name,
+      role: member.role || "",
+      startDate: member.start_date || "",
+      allowance: member.holiday_allowance === null || member.holiday_allowance === undefined ? "" : String(member.holiday_allowance),
+    });
+  };
+
+  const cancelEditMember = () => {
+    setEditingMemberId(null);
+    setMemberForm(emptyMemberForm);
+  };
+
   const addTeamMember = async () => {
     const name = memberForm.name.trim();
     if (!name) {
       setNotice("Enter a name for the team member.");
       return;
     }
-    if (teamMembers.some((member) => member.name.toLowerCase() === name.toLowerCase())) {
+    if (teamMembers.some((member) => member.id !== editingMemberId && member.name.toLowerCase() === name.toLowerCase())) {
       setNotice("That person is already on the team.");
       return;
     }
-    const role = memberForm.role.trim() || null;
+    const allowanceText = String(memberForm.allowance).trim();
+    if (allowanceText !== "" && (Number.isNaN(Number(allowanceText)) || Number(allowanceText) < 0)) {
+      setNotice("Holiday allowance must be a number of days, 0 or more.");
+      return;
+    }
+    const details = {
+      name,
+      role: memberForm.role.trim() || null,
+      start_date: memberForm.startDate || null,
+      holiday_allowance: allowanceText === "" ? null : Number(allowanceText),
+    };
+
+    if (editingMemberId) {
+      const existing = teamMembers.find((member) => member.id === editingMemberId);
+      if (!existing) return;
+      if (!useLocalTeam) {
+        const { error } = await supabase.from("team_members").update(details).eq("id", editingMemberId).eq("org_id", activeOrgId);
+        if (error) {
+          setNotice("Could not save the changes. Check your permissions and that the latest team SQL has been run.");
+          return;
+        }
+        if (existing.name !== name) {
+          await supabase.from("tasks").update({ person: name }).eq("org_id", activeOrgId).eq("person", existing.name);
+        }
+      }
+      if (existing.name !== name) {
+        setTasks((current) => current.map((task) => (task.person === existing.name ? { ...task, person: name } : task)));
+      }
+      setTeamMembers((current) => current.map((member) => (member.id === editingMemberId ? { ...member, ...details } : member)));
+      cancelEditMember();
+      setNotice(`${name} updated.`);
+      setTimeout(() => setNotice(""), 2200);
+      return;
+    }
+
     if (useLocalTeam) {
-      setTeamMembers((current) => [...current, { id: `local-${Date.now()}`, name, role }]);
+      setTeamMembers((current) => [...current, { id: `local-${Date.now()}`, ...details }]);
     } else {
-      const { data, error } = await supabase.from("team_members").insert({ org_id: activeOrgId, name, role }).select().single();
+      const { data, error } = await supabase.from("team_members").insert({ org_id: activeOrgId, ...details }).select().single();
       if (error) {
-        setNotice("Could not add the team member. Check your permissions.");
+        setNotice("Could not add the team member. Check your permissions and that the latest team SQL has been run.");
         return;
       }
       setTeamMembers((current) => (current.some((m) => m.id === data.id) ? current : [...current, data]));
     }
-    setMemberForm({ name: "", role: "" });
+    setMemberForm(emptyMemberForm);
     setNotice(`${name} added to the team.`);
     setTimeout(() => setNotice(""), 2200);
   };
@@ -2048,6 +2164,7 @@ export default function StandardWorkBoard() {
     }
     setTeamMembers((current) => current.filter((item) => item.id !== member.id));
     setTeamAbsences((current) => current.filter((absence) => absence.member_id !== member.id));
+    if (editingMemberId === member.id) cancelEditMember();
   };
 
   const addAbsence = async () => {
@@ -2059,11 +2176,13 @@ export default function StandardWorkBoard() {
       setNotice("The end date must be on or after the start date.");
       return;
     }
+    const isHalfDay = absenceForm.dayPart !== "full";
     const record = {
       member_id: absenceForm.memberId,
       type: absenceForm.type,
+      day_part: absenceForm.dayPart,
       start_date: absenceForm.start,
-      end_date: absenceForm.end,
+      end_date: isHalfDay ? absenceForm.start : absenceForm.end,
       note: absenceForm.note.trim() || null,
     };
     if (useLocalTeam) {
@@ -2071,7 +2190,7 @@ export default function StandardWorkBoard() {
     } else {
       const { data, error } = await supabase.from("team_absences").insert({ ...record, org_id: activeOrgId }).select().single();
       if (error) {
-        setNotice("Could not save the absence. Check your permissions.");
+        setNotice("Could not save the absence. Check your permissions and that the latest team SQL has been run.");
         return;
       }
       setTeamAbsences((current) => (current.some((a) => a.id === data.id) ? current : [...current, data]));
@@ -2082,6 +2201,11 @@ export default function StandardWorkBoard() {
   };
 
   const deleteAbsence = async (absence) => {
+    const person = teamMembers.find((member) => member.id === absence.member_id)?.name || "this person";
+    const label = absenceTypes[absence.type]?.label || "absence";
+    const part = absence.day_part && absence.day_part !== "full" ? ` (${dayPartLabels[absence.day_part].toLowerCase()})` : "";
+    const dates = absence.start_date === absence.end_date ? absence.start_date : `${absence.start_date} to ${absence.end_date}`;
+    if (!window.confirm(`Remove ${person}'s ${label.toLowerCase()} on ${dates}${part}?`)) return;
     if (!useLocalTeam) {
       const { error } = await supabase.from("team_absences").delete().eq("id", absence.id).eq("org_id", activeOrgId);
       if (error) {
@@ -2118,6 +2242,14 @@ export default function StandardWorkBoard() {
       .filter((absence) => absence.end_date >= todayIso)
       .sort((a, b) => a.start_date.localeCompare(b.start_date));
     const inputClass = "mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700 outline-none focus:border-emerald-700";
+    const reviewYears = [...new Set([new Date().getFullYear(), reviewYear, ...teamAbsences.map((absence) => Number(absence.start_date.slice(0, 4)))])].sort((a, b) => b - a);
+    const reviewMembers = reviewMemberId === "all" ? teamMembers : teamMembers.filter((member) => member.id === reviewMemberId);
+    const pastAbsences = teamAbsences
+      .filter((absence) => (reviewMemberId === "all" || absence.member_id === reviewMemberId)
+        && absence.end_date < todayIso
+        && absence.start_date <= `${reviewYear}-12-31`
+        && absence.end_date >= `${reviewYear}-01-01`)
+      .sort((a, b) => b.start_date.localeCompare(a.start_date));
 
     return (
       <main className="mx-auto max-w-[1700px] space-y-6 p-6">
@@ -2164,10 +2296,10 @@ export default function StandardWorkBoard() {
                         return (
                           <td
                             key={key}
-                            title={absence ? `${absenceTypes[absence.type]?.label || absence.type}${absence.note ? `: ${absence.note}` : ""}` : "Available"}
+                            title={absence ? `${absenceTypes[absence.type]?.label || absence.type}${absence.day_part && absence.day_part !== "full" ? ` (${dayPartLabels[absence.day_part]})` : ""}${absence.note ? `: ${absence.note}` : ""}` : "Available"}
                             className={`rounded-md py-2 text-center font-semibold ${absence ? absenceTypes[absence.type]?.cell || absenceTypes.other.cell : "bg-emerald-50 text-emerald-700"}`}
                           >
-                            {absence ? (absenceTypes[absence.type]?.label || "Away").slice(0, 3) : "✓"}
+                            {absence ? `${(absenceTypes[absence.type]?.label || "Away").slice(0, 3)}${absence.day_part === "am" ? " AM" : absence.day_part === "pm" ? " PM" : ""}` : "✓"}
                           </td>
                         );
                       })}
@@ -2177,10 +2309,15 @@ export default function StandardWorkBoard() {
                     <td className="pt-2 text-sm font-semibold text-slate-800">Available</td>
                     {days.map((date) => {
                       const key = formatDateISO(date);
-                      const available = teamMembers.filter((member) => !absenceFor(member.id, key)).length;
+                      const available = teamMembers.reduce((sum, member) => {
+                        const away = teamAbsences
+                          .filter((absence) => absence.member_id === member.id && absence.start_date <= key && absence.end_date >= key)
+                          .reduce((total, absence) => total + absenceDayValue(absence), 0);
+                        return sum + (1 - Math.min(1, away));
+                      }, 0);
                       return (
                         <td key={key} className={`rounded-md pt-2 text-center text-sm font-bold ${available === teamMembers.length ? "text-emerald-700" : available === 0 ? "text-rose-700" : "text-amber-700"}`}>
-                          {available}/{teamMembers.length}
+                          {formatDays(available)}/{teamMembers.length}
                         </td>
                       );
                     })}
@@ -2199,25 +2336,44 @@ export default function StandardWorkBoard() {
 
         <div className="grid gap-6 lg:grid-cols-2">
           <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-            <h2 className="text-lg font-semibold text-slate-900">Team members</h2>
-            <div className="mt-4 grid gap-3 sm:grid-cols-[1fr_1fr_auto] sm:items-end">
+            <h2 className="text-lg font-semibold text-slate-900">{editingMemberId ? "Edit team member" : "Team members"}</h2>
+            <div className="mt-4 grid gap-3 sm:grid-cols-2">
               <label className="text-xs font-medium uppercase tracking-[0.12em] text-slate-500">Name
                 <input value={memberForm.name} onChange={(e) => setMemberForm({ ...memberForm, name: e.target.value })} onKeyDown={(e) => e.key === "Enter" && addTeamMember()} className={inputClass} />
               </label>
               <label className="text-xs font-medium uppercase tracking-[0.12em] text-slate-500">Role (optional)
                 <input value={memberForm.role} onChange={(e) => setMemberForm({ ...memberForm, role: e.target.value })} onKeyDown={(e) => e.key === "Enter" && addTeamMember()} className={inputClass} />
               </label>
-              <button type="button" onClick={addTeamMember} className="inline-flex items-center justify-center gap-2 rounded-xl bg-[#103c2d] px-4 py-2.5 text-sm font-semibold text-white hover:bg-emerald-900">
-                <Plus size={16} /> Add
+              <label className="text-xs font-medium uppercase tracking-[0.12em] text-slate-500">Start date with company
+                <input type="date" value={memberForm.startDate} onChange={(e) => setMemberForm({ ...memberForm, startDate: e.target.value })} className={inputClass} />
+              </label>
+              <label className="text-xs font-medium uppercase tracking-[0.12em] text-slate-500">Holiday allowance (days per year)
+                <input type="number" min="0" step="0.5" value={memberForm.allowance} onChange={(e) => setMemberForm({ ...memberForm, allowance: e.target.value })} className={inputClass} />
+              </label>
+            </div>
+            <div className="mt-3 flex gap-2">
+              <button type="button" onClick={addTeamMember} className="inline-flex flex-1 items-center justify-center gap-2 rounded-xl bg-[#103c2d] px-4 py-2.5 text-sm font-semibold text-white hover:bg-emerald-900">
+                {editingMemberId ? "Save changes" : <><Plus size={16} /> Add team member</>}
               </button>
+              {editingMemberId && (
+                <button type="button" onClick={cancelEditMember} className="rounded-xl border border-slate-300 px-4 py-2.5 text-sm font-semibold text-slate-700 hover:bg-slate-50">Cancel</button>
+              )}
             </div>
             <ul className="mt-4 divide-y divide-slate-100">
               {teamMembers.map((member) => (
-                <li key={member.id} className="flex items-center justify-between gap-3 py-2">
-                  <span className="text-sm text-slate-800"><b>{member.name}</b>{member.role && <span className="text-slate-500"> · {member.role}</span>}</span>
-                  <button type="button" onClick={() => deleteTeamMember(member)} className="inline-flex items-center gap-1 rounded-lg border border-rose-200 bg-rose-50 px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.12em] text-rose-700 hover:bg-rose-100">
-                    <Trash2 size={12} /> Delete
-                  </button>
+                <li key={member.id} className={`flex items-center justify-between gap-3 py-2 ${editingMemberId === member.id ? "bg-amber-50" : ""}`}>
+                  <span className="text-sm text-slate-800">
+                    <b>{member.name}</b>{member.role && <span className="text-slate-500"> · {member.role}</span>}
+                    {member.start_date && <span className="block text-xs text-slate-500">Started {parseIso(member.start_date).toLocaleDateString("en-GB")} · {serviceLabel(member.start_date)} service</span>}
+                  </span>
+                  <span className="flex shrink-0 gap-2">
+                    <button type="button" onClick={() => startEditMember(member)} className="inline-flex items-center gap-1 rounded-lg border border-slate-300 px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.12em] text-slate-700 hover:bg-slate-50">
+                      <Pencil size={12} /> Edit
+                    </button>
+                    <button type="button" onClick={() => deleteTeamMember(member)} className="inline-flex items-center gap-1 rounded-lg border border-rose-200 bg-rose-50 px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.12em] text-rose-700 hover:bg-rose-100">
+                      <Trash2 size={12} /> Delete
+                    </button>
+                  </span>
                 </li>
               ))}
             </ul>
@@ -2237,11 +2393,18 @@ export default function StandardWorkBoard() {
                   {Object.entries(absenceTypes).map(([key, item]) => <option key={key} value={key}>{item.label}</option>)}
                 </select>
               </label>
+              <label className="text-xs font-medium uppercase tracking-[0.12em] text-slate-500">Length
+                <select value={absenceForm.dayPart} onChange={(e) => setAbsenceForm({ ...absenceForm, dayPart: e.target.value, end: e.target.value === "full" ? absenceForm.end : absenceForm.start })} className={inputClass}>
+                  <option value="full">Full day(s)</option>
+                  <option value="am">Half day - morning</option>
+                  <option value="pm">Half day - afternoon</option>
+                </select>
+              </label>
               <label className="text-xs font-medium uppercase tracking-[0.12em] text-slate-500">From
-                <input type="date" value={absenceForm.start} onChange={(e) => setAbsenceForm({ ...absenceForm, start: e.target.value, end: absenceForm.end < e.target.value ? e.target.value : absenceForm.end })} className={inputClass} />
+                <input type="date" value={absenceForm.start} onChange={(e) => setAbsenceForm({ ...absenceForm, start: e.target.value, end: absenceForm.dayPart !== "full" || absenceForm.end < e.target.value ? e.target.value : absenceForm.end })} className={inputClass} />
               </label>
               <label className="text-xs font-medium uppercase tracking-[0.12em] text-slate-500">To (inclusive)
-                <input type="date" value={absenceForm.end} min={absenceForm.start} onChange={(e) => setAbsenceForm({ ...absenceForm, end: e.target.value })} className={inputClass} />
+                <input type="date" value={absenceForm.dayPart !== "full" ? absenceForm.start : absenceForm.end} min={absenceForm.start} disabled={absenceForm.dayPart !== "full"} onChange={(e) => setAbsenceForm({ ...absenceForm, end: e.target.value })} className={`${inputClass} disabled:bg-slate-100`} />
               </label>
               <label className="text-xs font-medium uppercase tracking-[0.12em] text-slate-500 sm:col-span-2">Note (optional)
                 <input value={absenceForm.note} onChange={(e) => setAbsenceForm({ ...absenceForm, note: e.target.value })} className={inputClass} />
@@ -2258,8 +2421,8 @@ export default function StandardWorkBoard() {
                   <li key={absence.id} className="flex items-center justify-between gap-3 py-2 text-sm">
                     <span className="text-slate-800">
                       <b>{memberName(absence.member_id)}</b>
-                      <span className={`ml-2 rounded-full px-2 py-0.5 text-[11px] font-semibold ${absenceTypes[absence.type]?.cell || absenceTypes.other.cell}`}>{absenceTypes[absence.type]?.label || absence.type}</span>
-                      <span className="block text-xs text-slate-500">{absence.start_date} to {absence.end_date}{absence.note ? ` · ${absence.note}` : ""}</span>
+                      <span className={`ml-2 rounded-full px-2 py-0.5 text-[11px] font-semibold ${absenceTypes[absence.type]?.cell || absenceTypes.other.cell}`}>{absenceTypes[absence.type]?.label || absence.type}{absence.day_part && absence.day_part !== "full" ? ` · ${dayPartLabels[absence.day_part]} (½)` : ""}</span>
+                      <span className="block text-xs text-slate-500">{absence.start_date === absence.end_date ? absence.start_date : `${absence.start_date} to ${absence.end_date}`} · {formatDays(countAbsenceDays(absence))} working day(s){absence.note ? ` · ${absence.note}` : ""}</span>
                     </span>
                     <button type="button" onClick={() => deleteAbsence(absence)} className="rounded-lg border border-slate-300 p-1.5 text-slate-600 hover:bg-slate-50" aria-label="Remove absence"><X size={14} /></button>
                   </li>
@@ -2268,6 +2431,81 @@ export default function StandardWorkBoard() {
             )}
           </section>
         </div>
+
+        <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+          <div className="flex flex-wrap items-end justify-between gap-3">
+            <div>
+              <h2 className="text-lg font-semibold text-slate-900">Holiday allowance and history</h2>
+              <p className="mt-1 text-sm text-slate-500">Holiday days count Monday to Friday only. Half days count as 0.5.</p>
+            </div>
+            <div className="flex flex-wrap gap-3">
+              <label className="text-xs font-medium uppercase tracking-[0.12em] text-slate-500">Year
+                <select value={reviewYear} onChange={(e) => setReviewYear(Number(e.target.value))} className={inputClass}>
+                  {reviewYears.map((year) => <option key={year} value={year}>{year}</option>)}
+                </select>
+              </label>
+              <label className="text-xs font-medium uppercase tracking-[0.12em] text-slate-500">Person
+                <select value={reviewMemberId} onChange={(e) => setReviewMemberId(e.target.value)} className={inputClass}>
+                  <option value="all">Everyone</option>
+                  {teamMembers.map((member) => <option key={member.id} value={member.id}>{member.name}</option>)}
+                </select>
+              </label>
+            </div>
+          </div>
+
+          {reviewMembers.length > 0 && (
+            <div className="mt-4 overflow-x-auto">
+              <table className="w-full min-w-[640px] text-left text-sm">
+                <thead>
+                  <tr className="text-xs uppercase tracking-[0.12em] text-slate-500">
+                    <th className="py-2">Person</th>
+                    <th className="py-2">Service</th>
+                    <th className="py-2 text-right">Allowance</th>
+                    <th className="py-2 text-right">Taken</th>
+                    <th className="py-2 text-right">Booked</th>
+                    <th className="py-2 text-right">Remaining</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {reviewMembers.map((member) => {
+                    const stats = holidayStats(member, reviewYear);
+                    return (
+                      <tr key={member.id}>
+                        <td className="py-2 font-semibold text-slate-800">{member.name}</td>
+                        <td className="py-2 text-slate-600">{serviceLabel(member.start_date) || "-"}</td>
+                        <td className="py-2 text-right">{stats.allowance === null ? "Not set" : formatDays(stats.allowance)}</td>
+                        <td className="py-2 text-right">{formatDays(stats.taken)}</td>
+                        <td className="py-2 text-right">{formatDays(stats.booked)}</td>
+                        <td className={`py-2 text-right font-semibold ${stats.remaining === null ? "text-slate-400" : stats.remaining < 0 ? "text-rose-700" : "text-emerald-700"}`}>
+                          {stats.remaining === null ? "-" : formatDays(stats.remaining)}
+                          {stats.remaining !== null && stats.remaining < 0 && <span className="ml-1 text-[10px] uppercase">over</span>}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+
+          <h3 className="mt-6 text-sm font-semibold uppercase tracking-[0.12em] text-slate-500">Previously taken in {reviewYear}</h3>
+          {pastAbsences.length === 0 ? (
+            <p className="mt-2 text-sm text-slate-500">Nothing recorded for this period.</p>
+          ) : (
+            <ul className="mt-2 divide-y divide-slate-100">
+              {pastAbsences.map((absence) => (
+                <li key={absence.id} className="flex items-center justify-between gap-3 py-2 text-sm">
+                  <span className="text-slate-800">
+                    <b>{memberName(absence.member_id)}</b>
+                    <span className={`ml-2 rounded-full px-2 py-0.5 text-[11px] font-semibold ${absenceTypes[absence.type]?.cell || absenceTypes.other.cell}`}>{absenceTypes[absence.type]?.label || absence.type}{absence.day_part && absence.day_part !== "full" ? ` · ${dayPartLabels[absence.day_part]} (½)` : ""}</span>
+                    <span className="block text-xs text-slate-500">{absence.start_date === absence.end_date ? absence.start_date : `${absence.start_date} to ${absence.end_date}`} · {formatDays(countAbsenceDays(absence, `${reviewYear}-01-01`, `${reviewYear}-12-31`))} working day(s){absence.note ? ` · ${absence.note}` : ""}</span>
+                  </span>
+                  <button type="button" onClick={() => deleteAbsence(absence)} className="rounded-lg border border-slate-300 p-1.5 text-slate-600 hover:bg-slate-50" aria-label="Remove absence"><X size={14} /></button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </section>
       </main>
     );
   };
@@ -2999,13 +3237,14 @@ export default function StandardWorkBoard() {
                       onChange={(event) => setDemoRoleOverride(event.target.value)}
                       className="rounded-md border border-white/10 bg-[#0d1f1c] px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.12em] text-white outline-none"
                     >
-                      <option value="admin">Admin</option>
-                      <option value="manager">Manager</option>
-                      <option value="operations">Operations</option>
-                      <option value="cleaner">Cleaner</option>
-                      <option value="viewer">Viewer</option>
+                      <option value="admin">Admin (Org)</option>
+                      <option value="manager">Manager / Supervisor</option>
+                      <option value="operations">Daily Operations</option>
                     </select>
                   </>
+                )}
+                {session && !demoAccess && !canPreviewRoles && (
+                  <span className="px-1 text-[10px] font-semibold uppercase tracking-[0.12em] text-lime-100">{roleLabel}</span>
                 )}
                 {session && (
                   <button type="button" onClick={handleSignOut} className="rounded-full border border-white/10 bg-white/5 px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.12em] text-white hover:bg-white/10">
@@ -3022,10 +3261,10 @@ export default function StandardWorkBoard() {
         renderSettingsPage()
       ) : currentPage === "team" && canManageTeam ? (
         renderTeamPage()
-      ) : currentPage === "kpis" ? (
+      ) : currentPage === "kpis" && canViewKpis ? (
         renderKpiPage()
-      ) : currentPage === "performance" ? (
-        canViewPerformance ? renderPerformancePage() : renderKpiPage()
+      ) : currentPage === "performance" && canViewPerformance ? (
+        renderPerformancePage()
       ) : (
         <>
           <main className="mx-auto max-w-[1700px] p-6">
