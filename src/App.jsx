@@ -423,6 +423,8 @@ export default function StandardWorkBoard() {
   const [authReady, setAuthReady] = useState(false);
   const [memberships, setMemberships] = useState([]);
   const [membershipsLoadedFor, setMembershipsLoadedFor] = useState(null);
+  const [membershipError, setMembershipError] = useState("");
+  const [membershipDebug, setMembershipDebug] = useState("");
   const [activeOrgId, setActiveOrgId] = useState(null);
   const [loadedFrom, setLoadedFrom] = useState(null);
   const [demoAccess, setDemoAccess] = useState(false);
@@ -867,7 +869,7 @@ export default function StandardWorkBoard() {
       return undefined;
     }
 
-    const loadMemberships = async () => {
+    const fetchMembershipRows = async () => {
       const [membershipResult, adminResult] = await Promise.all([
         supabase
           .from("organisation_memberships")
@@ -876,10 +878,28 @@ export default function StandardWorkBoard() {
           .eq("status", "active"),
         supabase.from("platform_admins").select("user_id").eq("user_id", sessionUserId).maybeSingle(),
       ]);
+      return { membershipResult, adminResult };
+    };
+
+    const loadMemberships = async () => {
+      // An empty result from a session whose token isn't attached yet looks identical to "no access", so retry.
+      await supabase.auth.getSession();
+      let { membershipResult, adminResult } = await fetchMembershipRows();
+      for (let attempt = 0; attempt < 3 && isMounted; attempt += 1) {
+        const usable = (membershipResult.data || []).some((row) => row.organisations) || adminResult.data;
+        if (usable) break;
+        await new Promise((resolve) => setTimeout(resolve, 800 * (attempt + 1)));
+        if (!isMounted) return;
+        ({ membershipResult, adminResult } = await fetchMembershipRows());
+      }
 
       if (!isMounted) return;
 
-      let rows = membershipResult.error ? [] : (membershipResult.data || []).filter((row) => row.organisations);
+      const lookupError = membershipResult.error || adminResult.error;
+      setMembershipError(lookupError ? (lookupError.message || String(lookupError)) : "");
+      const rawRows = membershipResult.data || [];
+      setMembershipDebug(`rows=${rawRows.length}, withOrg=${rawRows.filter((row) => row.organisations).length}`);
+      let rows = membershipResult.error ? [] : rawRows.filter((row) => row.organisations);
 
       setIsPlatformAdmin(Boolean(adminResult.data));
       if (adminResult.data) {
@@ -3269,6 +3289,9 @@ export default function StandardWorkBoard() {
                   You are signed in, but you have not been added to an organisation. Ask your administrator to grant you access.
                 </p>
                 <p className="mt-3 text-center text-sm font-semibold text-slate-800">Signed in as {session?.user?.email || "unknown account"}</p>
+                {membershipError && <p className="mt-2 text-center text-xs text-rose-700">Lookup error: {membershipError}</p>}
+                <p className="mt-2 text-center text-[11px] text-slate-400">{membershipDebug} · {String(session?.user?.id || "").slice(0, 8)}</p>
+                <button type="button" onClick={() => window.location.reload()} className="mx-auto mt-4 block rounded-xl bg-[#103c2d] px-4 py-2 text-sm font-semibold text-white">Try again</button>
               </>
             ) : (
               <>
