@@ -1130,29 +1130,21 @@ export default function StandardWorkBoard() {
     return null;
   }, [personLanes, profile, session]);
   const cleanerDisplayNameValue = cleanerDisplayName || profile?.name || profile?.full_name || session?.user?.email?.split("@")[0] || "Cleaner";
+  const ownNames = useMemo(() => new Set([
+    cleanerDisplayNameValue,
+    profile?.name,
+    profile?.full_name,
+    session?.user?.user_metadata?.full_name,
+    session?.user?.user_metadata?.name,
+    session?.user?.email ? session.user.email.split("@")[0] : "",
+  ].filter(Boolean).map((name) => String(name).trim().toLowerCase())), [cleanerDisplayNameValue, profile, session]);
+  const isOwnTask = (task) => Boolean(task.person && ownNames.has(String(task.person).trim().toLowerCase()));
+  const ownWorkOnly = currentRole === "operations";
+
   const cleanerAssignedResourceIds = useMemo(() => {
-    if (currentRole !== "cleaner") return [];
-
-    const normalizedCleanerName = cleanerDisplayNameValue.toLowerCase();
-    const assignedIds = new Set();
-
-    resources.forEach((resource) => {
-      const candidateOwners = [resource.assignedTo, resource.owner, resource.person, resource.name].filter(Boolean);
-      candidateOwners.forEach((owner) => {
-        if (String(owner).toLowerCase() === normalizedCleanerName) {
-          assignedIds.add(resource.id);
-        }
-      });
-    });
-
-    tasks.forEach((task) => {
-      if (task.person && task.person.toLowerCase() === normalizedCleanerName) {
-        if (task.resourceId) assignedIds.add(task.resourceId);
-      }
-    });
-
-    return [...assignedIds];
-  }, [cleanerDisplayNameValue, currentRole, resources, tasks]);
+    if (!ownWorkOnly) return [];
+    return [...new Set(tasks.filter(isOwnTask).map((task) => task.resourceId).filter(Boolean))];
+  }, [ownWorkOnly, ownNames, tasks]);
   const isAuthenticated = Boolean(session || demoAccess);
   const isAdmin = currentRole === "admin";
   const canManageSettings = isAdmin;
@@ -1752,23 +1744,14 @@ export default function StandardWorkBoard() {
       ? laneItems.filter((lane) => locationFilter === "all" || (lane.zone || "") === locationFilter)
       : laneItems;
     const baseLanes = locationScopedLanes.filter(queryMatches);
-    if (currentRole !== "cleaner") return baseLanes;
+    if (!ownWorkOnly) return baseLanes;
 
     if (laneMode === "person") {
-      const cleanerLaneId = cleanerDisplayNameValue || "Cleaner";
-      return baseLanes.filter((lane) => {
-        const laneText = getLaneName(lane).toLowerCase();
-        return laneText === cleanerLaneId.toLowerCase() || laneText.includes(cleanerLaneId.toLowerCase());
-      });
+      return baseLanes.filter((lane) => ownNames.has(getLaneName(lane).trim().toLowerCase()));
     }
 
-    return baseLanes.filter((lane) => {
-      const laneId = String(lane.id || "");
-      return cleanerAssignedResourceIds.length
-        ? cleanerAssignedResourceIds.some((resourceId) => String(resourceId).toLowerCase() === laneId.toLowerCase())
-        : true;
-    });
-  }, [cleanerAssignedResourceIds, cleanerDisplayNameValue, currentRole, laneItems, laneMode, locationFilter, query]);
+    return baseLanes.filter((lane) => cleanerAssignedResourceIds.some((resourceId) => String(resourceId).toLowerCase() === String(lane.id || "").toLowerCase()));
+  }, [cleanerAssignedResourceIds, ownNames, ownWorkOnly, laneItems, laneMode, locationFilter, query]);
 
   const taskConflictMap = useMemo(() => {
     const conflicts = new Set();
@@ -1799,11 +1782,12 @@ export default function StandardWorkBoard() {
   }, [tasks]);
 
   const operationalAlerts = useMemo(() => {
-    const open = tasks.filter((task) => task.status !== "completed");
-    const issues = tasks.filter((task) => task.type === "issue" || task.status === "issue");
+    const scoped = ownWorkOnly ? tasks.filter(isOwnTask) : tasks;
+    const open = scoped.filter((task) => task.status !== "completed");
+    const issues = scoped.filter((task) => task.type === "issue" || task.status === "issue");
     const overdue = open.filter((task) => !(task.type === "issue" || task.status === "issue") && new Date(task.end).getTime() < Date.now());
-    const conflicts = tasks.filter((task) => taskConflictMap.has(task.id));
-    const absent = tasks.filter((task) => taskAbsence(task));
+    const conflicts = scoped.filter((task) => taskConflictMap.has(task.id));
+    const absent = scoped.filter((task) => taskAbsence(task));
     const names = (list) => [...new Set(list.map((task) => task.title))].slice(0, 3).join(", ");
     const plural = (count, word) => `${count} ${word}${count === 1 ? "" : "s"}`;
 
@@ -1813,26 +1797,12 @@ export default function StandardWorkBoard() {
       ...(conflicts.length > 0 ? [{ type: "conflict", message: `${plural(conflicts.length, "overlapping activity")}: ${names(conflicts)}`, taskId: "conflict" }] : []),
       ...(overdue.length > 0 ? [{ type: "overdue", message: `${plural(overdue.length, "overdue activity")}: ${names(overdue)}`, taskId: "overdue" }] : []),
     ];
-  }, [taskConflictMap, tasks, teamAbsences, teamMembers]);
+  }, [taskConflictMap, tasks, teamAbsences, teamMembers, ownWorkOnly, ownNames]);
 
   const visibleBoardTasks = useMemo(() => {
-    if (currentRole !== "cleaner") return filteredVisibleTasks;
-
-    const cleanerNames = new Set([
-      cleanerDisplayNameValue.toLowerCase(),
-      (profile?.name || "").toLowerCase(),
-      (profile?.full_name || "").toLowerCase(),
-      (session?.user?.user_metadata?.full_name || "").toLowerCase(),
-      (session?.user?.user_metadata?.name || "").toLowerCase(),
-      (session?.user?.email || "").split("@")[0].toLowerCase(),
-    ].filter(Boolean));
-
-    return filteredVisibleTasks.filter((task) => {
-      const isOwnedByCleaner = Boolean(task.person && cleanerNames.has(String(task.person).toLowerCase()));
-      const isAssignedResource = cleanerAssignedResourceIds.length > 0 && cleanerAssignedResourceIds.includes(task.resourceId);
-      return isOwnedByCleaner || isAssignedResource;
-    });
-  }, [cleanerAssignedResourceIds, cleanerDisplayNameValue, currentRole, filteredVisibleTasks, profile, session]);
+    if (!ownWorkOnly) return filteredVisibleTasks;
+    return filteredVisibleTasks.filter(isOwnTask);
+  }, [ownNames, ownWorkOnly, filteredVisibleTasks]);
 
   const getTaskCompletionVarianceMinutes = (task) => {
     if (task.status !== "completed") return 0;
