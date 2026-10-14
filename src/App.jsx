@@ -1493,7 +1493,7 @@ export default function StandardWorkBoard() {
   const currentHour = new Date().getHours() + new Date().getMinutes() / 60;
   const currentHourPercent = (currentHour / 24) * 100;
   const showLiveTimeMarker = viewMode === "day" || rangeDates.some((date) => formatDateISO(date) === todayKey);
-  const showTimeGrid = viewMode === "day" || (viewMode === "custom" && rangeDates.length <= 7);
+  const showTimeGrid = viewMode === "day";
   const isTodayDate = (dateInput) => formatDateISO(new Date(dateInput)) === todayKey;
 
   const persistTaskUpdate = async (task) => {
