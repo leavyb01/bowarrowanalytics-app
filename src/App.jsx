@@ -3233,10 +3233,11 @@ export default function StandardWorkBoard() {
                   <>
                     <span className="text-[9px] font-semibold uppercase tracking-[0.14em] text-lime-100">Role</span>
                     <select
-                      value={demoRoleOverride === null ? currentRole : demoRoleOverride}
-                      onChange={(event) => setDemoRoleOverride(event.target.value)}
+                      value={demoRoleOverride === null ? (isPlatformAdmin ? "global" : currentRole) : demoRoleOverride}
+                      onChange={(event) => setDemoRoleOverride(event.target.value === "global" ? null : event.target.value)}
                       className="rounded-md border border-white/10 bg-[#0d1f1c] px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.12em] text-white outline-none"
                     >
+                      {isPlatformAdmin && <option value="global">Admin (Global)</option>}
                       <option value="admin">Admin (Org)</option>
                       <option value="manager">Manager / Supervisor</option>
                       <option value="operations">Daily Operations</option>
