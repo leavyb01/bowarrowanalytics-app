@@ -3268,6 +3268,7 @@ export default function StandardWorkBoard() {
                 <p className="mt-3 text-center text-sm text-slate-600">
                   You are signed in, but you have not been added to an organisation. Ask your administrator to grant you access.
                 </p>
+                <p className="mt-3 text-center text-sm font-semibold text-slate-800">Signed in as {session?.user?.email || "unknown account"}</p>
               </>
             ) : (
               <>
