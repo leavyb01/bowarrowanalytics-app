@@ -1493,7 +1493,8 @@ export default function StandardWorkBoard() {
   const currentHour = new Date().getHours() + new Date().getMinutes() / 60;
   const currentHourPercent = (currentHour / 24) * 100;
   const showLiveTimeMarker = viewMode === "day" || rangeDates.some((date) => formatDateISO(date) === todayKey);
-  const showTimeGrid = viewMode === "day";
+  const showTimeGrid = viewMode === "day" || (viewMode === "custom" && rangeDates.length === 1);
+  const gridDate = viewMode === "custom" ? customStart : selectedDate;
   const isTodayDate = (dateInput) => formatDateISO(new Date(dateInput)) === todayKey;
 
   const persistTaskUpdate = async (task) => {
@@ -3435,7 +3436,7 @@ export default function StandardWorkBoard() {
 
                 {boardLanes.map((lane) => {
                   const roomState = laneMode === "resource" ? getResourceState(lane) : null;
-                  const laneAbsence = laneMode === "person" ? absenceForPerson(lane.id, selectedDate) : null;
+                  const laneAbsence = laneMode === "person" ? absenceForPerson(lane.id, gridDate) : null;
                   return (
                   <div key={lane.id} className="grid min-h-[140px]" style={{ gridTemplateColumns: `240px repeat(${HOURS.length}, minmax(58px, 1fr))`, ...boardBorder }}>
                     <div className="flex items-center justify-between gap-3 bg-white p-4" style={boardBorder}>
@@ -3470,7 +3471,7 @@ export default function StandardWorkBoard() {
                           key={hour}
                           style={boardBorder}
                           onDragOver={(event) => event.preventDefault()}
-                          onDrop={(event) => handleTaskDrop(event, lane.id, selectedDate, hour)}
+                          onDrop={(event) => handleTaskDrop(event, lane.id, gridDate, hour)}
                         />
                       ))}
                       {visibleBoardTasks
@@ -3478,7 +3479,7 @@ export default function StandardWorkBoard() {
                         .filter((task) => {
                           const startDate = formatDateISO(new Date(task.start));
                           const endDate = formatDateISO(new Date(task.end));
-                          return startDate === selectedDate || endDate === selectedDate || (selectedDate >= startDate && selectedDate <= endDate);
+                          return startDate === gridDate || endDate === gridDate || (gridDate >= startDate && gridDate <= endDate);
                         })
                         .map((task) => {
                           const window = addTaskWindow(task);
