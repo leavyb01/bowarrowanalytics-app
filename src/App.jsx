@@ -316,6 +316,66 @@ const onUpserts = (channel, table, filter, handler) =>
     channel,
   );
 
+const AUDIT_FIELD_LABELS = {
+  title: "Title",
+  type: "Type",
+  person: "Assigned to",
+  resource_id: "Location",
+  start_at: "Start",
+  end_at: "End",
+  status: "Status",
+  note: "Notes",
+  issue_reason: "Issue reason",
+  issue_activity: "Issue activity",
+  delay_minutes: "Delay (min)",
+};
+
+const formatAuditValue = (field, value) => {
+  if (value === null || value === undefined || value === "") return "none";
+  if (field === "start_at" || field === "end_at") {
+    return new Intl.DateTimeFormat("en-GB", { weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" }).format(new Date(value));
+  }
+  return String(value);
+};
+
+function TaskHistory({ audit }) {
+  const { rows, loading, failed } = audit;
+  const reassigned = rows.filter((row) => row.changes?.person).length;
+  const rescheduled = rows.filter((row) => row.changes?.start_at || row.changes?.end_at).length;
+  return (
+    <div className="mt-5 rounded-xl border border-slate-200 p-4">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <h3 className="text-sm font-semibold text-slate-900">Change history</h3>
+        {(reassigned > 0 || rescheduled > 0) && (
+          <span className="flex gap-1.5 text-[11px] font-semibold">
+            {rescheduled > 0 && <span className="rounded-full bg-amber-100 px-2 py-0.5 text-amber-800">Rescheduled {rescheduled}×</span>}
+            {reassigned > 0 && <span className="rounded-full bg-rose-100 px-2 py-0.5 text-rose-800">Reassigned {reassigned}×</span>}
+          </span>
+        )}
+      </div>
+      {loading && <p className="mt-2 text-xs text-slate-500">Loading history…</p>}
+      {failed && <p className="mt-2 text-xs text-amber-700">History is unavailable. Make sure the audit SQL has been run in Supabase.</p>}
+      {!loading && !failed && rows.length === 0 && <p className="mt-2 text-xs text-slate-500">No recorded changes yet. Changes made from now on will be logged here.</p>}
+      <ol className="mt-3 max-h-56 space-y-3 overflow-y-auto pr-1">
+        {rows.map((row) => (
+          <li key={row.id} className="border-l-2 border-slate-200 pl-3 text-xs text-slate-700">
+            <p className="font-semibold text-slate-900">
+              {row.action === "created" ? "Created" : row.action === "deleted" ? "Deleted" : "Updated"} by {row.changed_by_name || "Unknown"}
+              <span className="ml-2 font-normal text-slate-500">{new Intl.DateTimeFormat("en-GB", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" }).format(new Date(row.changed_at))}</span>
+            </p>
+            {row.action === "created" && row.changes?.person && <p>Assigned to {row.changes.person}</p>}
+            {row.action === "updated" && Object.entries(row.changes || {}).map(([field, change]) => (
+              <p key={field}>
+                <span className="font-semibold">{AUDIT_FIELD_LABELS[field] || field}:</span> {formatAuditValue(field, change.from)} → {formatAuditValue(field, change.to)}
+              </p>
+            ))}
+          </li>
+        ))}
+      </ol>
+    </div>
+  );
+}
+
 export default function StandardWorkBoard() {
   const [tasks, setTasks] = useState(initialTasks);
   const [resources, setResources] = useState(initialResources);
@@ -326,6 +386,7 @@ export default function StandardWorkBoard() {
   const [statusFilter, setStatusFilter] = useState("all");
   const [locationFilter, setLocationFilter] = useState("all");
   const [selectedTask, setSelectedTask] = useState(null);
+  const [taskAudit, setTaskAudit] = useState({ taskId: null, rows: [], loading: false, failed: false });
   const [showCreate, setShowCreate] = useState(false);
   const [editingTaskId, setEditingTaskId] = useState(null);
   const [templateQuery, setTemplateQuery] = useState("");
@@ -1194,6 +1255,27 @@ export default function StandardWorkBoard() {
   const isOwnTask = (task) => Boolean(task.person && ownNames.has(String(task.person).trim().toLowerCase()));
   const ownWorkOnly = currentRole === "operations";
 
+  const selectedTaskId = selectedTask?.id ?? null;
+  const selectedTaskUpdatedAt = selectedTask?.updated_at;
+  useEffect(() => {
+    if (selectedTaskId === null || !hasSupabase || !supabase || demoAccess || !activeOrgId || ownWorkOnly) return undefined;
+    let cancelled = false;
+    setTaskAudit((current) => ({ ...current, taskId: selectedTaskId, loading: true, failed: false }));
+    supabase
+      .from("task_audit")
+      .select("*")
+      .eq("org_id", activeOrgId)
+      .eq("task_id", selectedTaskId)
+      .order("changed_at", { ascending: false })
+      .limit(200)
+      .then(({ data, error }) => {
+        if (cancelled) return;
+        setTaskAudit({ taskId: selectedTaskId, rows: data || [], loading: false, failed: Boolean(error) });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedTaskId, selectedTaskUpdatedAt, activeOrgId, demoAccess, ownWorkOnly]);
   const cleanerAssignedResourceIds = useMemo(() => {
     if (!ownWorkOnly) return [];
     return [...new Set(tasks.filter(isOwnTask).map((task) => task.resourceId).filter(Boolean))];
@@ -3746,7 +3828,7 @@ export default function StandardWorkBoard() {
 
       {selectedTask && (
         <div className="fixed inset-0 z-40 flex items-center justify-center bg-slate-950/40 p-4" onClick={() => setSelectedTask(null)}>
-          <div className="w-full max-w-lg rounded-2xl bg-white p-6 shadow-2xl" onClick={(e) => e.stopPropagation()}>
+          <div className="max-h-[92vh] w-full max-w-lg overflow-y-auto rounded-2xl bg-white p-6 shadow-2xl" onClick={(e) => e.stopPropagation()}>
             <div className="flex items-start justify-between gap-4">
               <div>
                 <span className={`inline-flex rounded-full border px-2.5 py-1 text-xs font-semibold ${taskTypeClass(selectedTask)}`}>
@@ -3791,6 +3873,8 @@ export default function StandardWorkBoard() {
                 <p className="flex items-start gap-2"><Clock3 size={16} className="mt-0.5" /><span><b>Delay logged:</b> {formatMinutes(selectedTask.delayMinutes)}</span></p>
               )}
             </div>
+
+            {hasSupabase && supabase && !demoAccess && !ownWorkOnly && taskAudit.taskId === selectedTask.id && <TaskHistory audit={taskAudit} />}
 
             <div className="mt-5 flex flex-col gap-2">
               {canEditTasks && (
