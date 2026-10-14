@@ -1646,6 +1646,12 @@ export default function StandardWorkBoard() {
     }
 
     const assignee = teamMembers.find((member) => member.name.trim().toLowerCase() === form.person.trim().toLowerCase());
+    const isDemoMode = !hasSupabase || !supabase || demoAccess;
+    const keepsExistingPerson = editingTaskId !== null && tasks.find((task) => task.id === editingTaskId)?.person === form.person;
+    if (!isDemoMode && !assignee && !keepsExistingPerson) {
+      setNotice("Pick someone from My Team. Add them on the My Team page first.");
+      return;
+    }
     if (assignee) {
       const startKey = form.start.slice(0, 10);
       const absence = absenceFor(assignee.id, startKey);
@@ -3193,7 +3199,7 @@ export default function StandardWorkBoard() {
               )}
               {canManageTeam && (
                 <button onClick={() => setCurrentPage("team")} className={`rounded-md px-3 py-1.5 text-[10px] font-semibold uppercase tracking-[0.14em] ${currentPage === "team" ? "bg-lime-300 text-[#103c2d]" : "text-white/80"}`}>
-                  Team
+                  My Team
                 </button>
               )}
             </div>
@@ -3865,7 +3871,16 @@ export default function StandardWorkBoard() {
               <label className="text-sm text-slate-700">Resource<select value={form.resourceId} onChange={(e) => setForm({ ...form, resourceId: e.target.value })} className="mt-1 w-full rounded-lg border p-2.5">{resources.map((resource) => <option key={resource.id} value={resource.id}>{resource.name}</option>)}</select></label>
               <label className="text-sm text-slate-700">Work type<select value={form.type} onChange={(e) => setForm({ ...form, type: e.target.value })} className="mt-1 w-full rounded-lg border p-2.5">{workTypes.map((type) => <option key={type.id} value={type.id}>{type.name}</option>)}</select></label>
               <label className="text-sm sm:col-span-2 text-slate-700">Task<input value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} className="mt-1 w-full rounded-lg border p-2.5" /></label>
-              <label className="text-sm sm:col-span-2 text-slate-700">Assigned person<input list="team-member-options" value={form.person} onChange={(e) => setForm({ ...form, person: e.target.value })} placeholder="e.g. Maria" className="mt-1 w-full rounded-lg border p-2.5" /><datalist id="team-member-options">{teamMembers.map((member) => <option key={member.id} value={member.name} />)}</datalist></label>
+              <label className="text-sm sm:col-span-2 text-slate-700">Assigned person{!hasSupabase || !supabase || demoAccess ? (
+                <><input list="team-member-options" value={form.person} onChange={(e) => setForm({ ...form, person: e.target.value })} placeholder="e.g. Maria" className="mt-1 w-full rounded-lg border p-2.5" /><datalist id="team-member-options">{teamMembers.map((member) => <option key={member.id} value={member.name} />)}</datalist></>
+              ) : (
+                <select value={form.person} onChange={(e) => setForm({ ...form, person: e.target.value })} className="mt-1 w-full rounded-lg border bg-white p-2.5">
+                  <option value="">Select from My Team…</option>
+                  {form.person && !teamMembers.some((member) => member.name === form.person) && <option value={form.person}>{form.person} (not in My Team)</option>}
+                  {teamMembers.map((member) => <option key={member.id} value={member.name}>{member.name}</option>)}
+                </select>
+              )}
+              {!hasSupabase || !supabase || demoAccess ? null : teamMembers.length === 0 && <span className="mt-1 block text-xs text-amber-700">No one in My Team yet. Add people on the My Team page first.</span>}</label>
               <label className="text-sm text-slate-700">Start<input type="datetime-local" value={form.start} onChange={(e) => setForm({ ...form, start: e.target.value })} className="mt-1 w-full rounded-lg border p-2.5" /></label>
               <label className="text-sm text-slate-700">End<input type="datetime-local" value={form.end} onChange={(e) => setForm({ ...form, end: e.target.value })} className="mt-1 w-full rounded-lg border p-2.5" /></label>
               <label className="text-sm sm:col-span-2 text-slate-700">Notes<textarea value={form.note} onChange={(e) => setForm({ ...form, note: e.target.value })} rows={3} className="mt-1 w-full rounded-lg border p-2.5" /></label>
