@@ -3532,7 +3532,8 @@ export default function StandardWorkBoard() {
                         }}
                       >
                         {currentDay && <span className="absolute inset-y-0 left-0 w-[2px] bg-amber-500" />}
-                        {toDateLabel(date, "short")}
+                        {date.toLocaleDateString("en-GB", { weekday: "short" })}
+                        <span className="block font-normal">{date.getDate()}/{date.getMonth() + 1}</span>
                       </div>
                     );
                   })}
