@@ -1318,7 +1318,7 @@ export default function StandardWorkBoard() {
   }, [ownWorkOnly, ownNames, tasks]);
   const isAuthenticated = Boolean(session || demoAccess);
   const isAdmin = currentRole === "admin";
-  const canManageSettings = isAdmin;
+  const canManageSettings = ["admin", "manager"].includes(currentRole);
   const canAddWorkItem = ["admin", "manager", "operations"].includes(currentRole);
   const canEditTasks = ["admin", "manager", "operations"].includes(currentRole);
   const canViewKpis = ["admin", "manager"].includes(currentRole);
