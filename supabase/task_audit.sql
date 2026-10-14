@@ -1,7 +1,21 @@
 -- Audit trail for activities. Run once in the Supabase SQL editor (safe to re-run).
--- Requires multi_tenant.sql and scale_and_privacy.sql to have been run first.
+-- Requires multi_tenant.sql to have been run first (it provides is_platform_admin / is_org_member).
 -- Every create / change / delete of an activity is logged by the database itself,
 -- so it is captured however the change was made and cannot be edited from the app.
+
+create or replace function public.is_operations_only(target text)
+returns boolean
+language sql
+stable
+security definer
+set search_path = public
+as $$
+  select not public.is_platform_admin() and exists (
+    select 1 from public.organisation_memberships m
+    where m.org_id::text = target and m.user_id = auth.uid() and m.status = 'active'
+      and m.role in ('operations', 'cleaner')
+  );
+$$;
 
 create table if not exists public.task_audit (
   id bigint generated always as identity primary key,
