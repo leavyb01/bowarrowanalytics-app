@@ -870,14 +870,30 @@ export default function StandardWorkBoard() {
     }
 
     const fetchMembershipRows = async () => {
-      const [membershipResult, adminResult] = await Promise.all([
+      const [rawMembershipResult, adminResult] = await Promise.all([
         supabase
           .from("organisation_memberships")
-          .select("org_id, role, status, organisations(id, name, slug)")
+          .select("org_id, role, status")
           .eq("user_id", sessionUserId)
           .eq("status", "active"),
         supabase.from("platform_admins").select("user_id").eq("user_id", sessionUserId).maybeSingle(),
       ]);
+
+      // Organisations are fetched separately: an embedded join needs a foreign key that this database doesn't expose.
+      let membershipResult = rawMembershipResult;
+      const orgIds = (rawMembershipResult.data || []).map((row) => row.org_id);
+      if (!rawMembershipResult.error && orgIds.length) {
+        const orgResult = await supabase.from("organisations").select("id, name, slug").in("id", orgIds);
+        if (orgResult.error) {
+          membershipResult = { data: [], error: orgResult.error };
+        } else {
+          const orgById = new Map((orgResult.data || []).map((org) => [String(org.id), org]));
+          membershipResult = {
+            data: rawMembershipResult.data.map((row) => ({ ...row, organisations: orgById.get(String(row.org_id)) || null })),
+            error: null,
+          };
+        }
+      }
       return { membershipResult, adminResult };
     };
 
