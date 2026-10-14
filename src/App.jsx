@@ -1098,7 +1098,7 @@ export default function StandardWorkBoard() {
   };
   const membershipRole = activeMembership ? normalizeRole(activeMembership.role) : null;
   const isRealSession = hasSupabase && !demoAccess;
-  const canPreviewRoles = demoAccess || isPlatformAdmin;
+  const canPreviewRoles = demoAccess || isPlatformAdmin || membershipRole === "admin";
   const currentRole = (canPreviewRoles && demoRoleOverride)
     || (isRealSession ? (membershipRole || "viewer") : "admin");
   const roleLabel = isPlatformAdmin && !demoRoleOverride
