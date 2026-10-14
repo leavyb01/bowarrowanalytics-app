@@ -286,6 +286,36 @@ updated_at: task.updated_at ?? task.updatedAt ?? new Date().toISOString(),
 updated_by: task.updated_by ?? task.updatedBy ?? (getCurrentUserName(null, null) || "System"),
 });
 
+const HISTORY_MONTHS = 3;
+const PAGE_SIZE = 1000;
+
+const historyCutoffISO = () => {
+  const cutoff = new Date();
+  cutoff.setMonth(cutoff.getMonth() - HISTORY_MONTHS);
+  cutoff.setHours(0, 0, 0, 0);
+  return cutoff.toISOString();
+};
+
+// Supabase returns at most 1000 rows per request, so page through the results.
+const fetchTasksPaged = async (orgId, fromISO, toISO) => {
+  const rows = [];
+  for (let offset = 0; ; offset += PAGE_SIZE) {
+    let query = supabase.from("standard_work_tasks").select("*").eq("org_id", orgId);
+    if (fromISO) query = query.gte("end_at", fromISO);
+    if (toISO) query = query.lt("end_at", toISO);
+    const { data, error } = await query.order("start_at").order("id").range(offset, offset + PAGE_SIZE - 1);
+    if (error) throw error;
+    rows.push(...(data || []));
+    if (!data || data.length < PAGE_SIZE) return rows;
+  }
+};
+
+const onUpserts = (channel, table, filter, handler) =>
+  ["INSERT", "UPDATE"].reduce(
+    (current, event) => current.on("postgres_changes", { event, schema: "public", table, filter }, handler),
+    channel,
+  );
+
 export default function StandardWorkBoard() {
   const [tasks, setTasks] = useState(initialTasks);
   const [resources, setResources] = useState(initialResources);
@@ -333,6 +363,7 @@ export default function StandardWorkBoard() {
   const [memberships, setMemberships] = useState([]);
   const [membershipsLoadedFor, setMembershipsLoadedFor] = useState(null);
   const [activeOrgId, setActiveOrgId] = useState(null);
+  const [loadedFrom, setLoadedFrom] = useState(null);
   const [demoAccess, setDemoAccess] = useState(false);
   const [demoRoleOverride, setDemoRoleOverride] = useState(null);
   const [selectedTeamMember, setSelectedTeamMember] = useState("");
@@ -531,28 +562,17 @@ export default function StandardWorkBoard() {
   useEffect(() => {
     if (!hasSupabase || !supabase || demoAccess || !activeOrgId) return undefined;
 
-    const channel = supabase
-      .channel(`team-live-${activeOrgId}`)
-      .on("postgres_changes", { event: "*", schema: "public", table: "team_members", filter: `org_id=eq.${activeOrgId}` }, (payload) => {
-        if (payload.eventType === "DELETE") {
-          setTeamMembers((current) => current.filter((member) => member.id !== payload.old.id));
-          setTeamAbsences((current) => current.filter((absence) => absence.member_id !== payload.old.id));
-          return;
-        }
+    const channel = onUpserts(supabase.channel(`team-live-${activeOrgId}`), "team_members", `org_id=eq.${activeOrgId}`, (payload) => {
         setTeamMembers((current) => (current.some((m) => m.id === payload.new.id)
           ? current.map((m) => (m.id === payload.new.id ? payload.new : m))
           : [...current, payload.new]));
-      })
-      .on("postgres_changes", { event: "*", schema: "public", table: "team_absences", filter: `org_id=eq.${activeOrgId}` }, (payload) => {
-        if (payload.eventType === "DELETE") {
-          setTeamAbsences((current) => current.filter((absence) => absence.id !== payload.old.id));
-          return;
-        }
+      });
+    onUpserts(channel, "team_absences", `org_id=eq.${activeOrgId}`, (payload) => {
         setTeamAbsences((current) => (current.some((a) => a.id === payload.new.id)
           ? current.map((a) => (a.id === payload.new.id ? payload.new : a))
           : [...current, payload.new]));
-      })
-      .subscribe();
+      });
+    channel.subscribe();
 
     return () => {
       supabase.removeChannel(channel);
@@ -575,23 +595,26 @@ export default function StandardWorkBoard() {
 
         setTasks([]);
         setResources([]);
+        setLoadedFrom(null);
 
         if (!activeOrgId) {
           return;
         }
 
+        const cutoff = historyCutoffISO();
         const [
           { data: resourceData, error: resourceError },
-          { data: taskData, error: taskError },
+          taskRows,
           { data: settingsData },
         ] = await Promise.all([
           supabase.from("standard_work_resources").select("*").eq("org_id", activeOrgId).order("name"),
-          supabase.from("standard_work_tasks").select("*").eq("org_id", activeOrgId).order("start_at"),
+          fetchTasksPaged(activeOrgId, cutoff),
           supabase.from("organisation_settings").select("*").eq("id", activeOrgId).maybeSingle(),
         ]);
 
         if (resourceError) throw resourceError;
-        if (taskError) throw taskError;
+        const taskData = taskRows;
+        if (isMounted) setLoadedFrom(cutoff);
 
         if (isMounted) {
           const loadedResources = (resourceData || []).map((resource) => ({
@@ -643,73 +666,60 @@ export default function StandardWorkBoard() {
     if (!hasSupabase || !supabase || demoAccess || !activeOrgId) return undefined;
 
     const orgFilter = `org_id=eq.${activeOrgId}`;
-    const channel = supabase
-      .channel(`standard-work-board-live-${activeOrgId}`)
-      .on(
-        "postgres_changes",
-        {
-          event: "*",
-          schema: "public",
-          table: "standard_work_tasks",
-          filter: orgFilter,
-        },
-        (payload) => {
-          if (payload.eventType === "INSERT" || payload.eventType === "UPDATE") {
-            const nextTask = normalizeTask(payload.new);
-            setTasks((currentTasks) => {
-              const existingIndex = currentTasks.findIndex((task) => task.id === nextTask.id);
-              if (existingIndex >= 0) {
-                const updatedTasks = [...currentTasks];
-                updatedTasks[existingIndex] = nextTask;
-                return updatedTasks;
-              }
-              return [...currentTasks, nextTask];
-            });
-          }
-
-          if (payload.eventType === "DELETE") {
-            setTasks((currentTasks) => currentTasks.filter((task) => task.id !== payload.old.id));
-          }
-        },
-      )
-      .on(
-        "postgres_changes",
-        {
-          event: "*",
-          schema: "public",
-          table: "standard_work_resources",
-          filter: orgFilter,
-        },
-        (payload) => {
-          if (payload.eventType === "INSERT" || payload.eventType === "UPDATE") {
-            const nextResource = {
-              id: payload.new.id,
-              name: payload.new.name,
-              zone: payload.new.zone ?? "Operations",
-              status: payload.new.status ?? "Available",
-              role: payload.new.role ?? "",
-            };
-
-            setResources((currentResources) => {
-              const existingIndex = currentResources.findIndex((resource) => resource.id === nextResource.id);
-              if (existingIndex >= 0) {
-                const updatedResources = [...currentResources];
-                updatedResources[existingIndex] = nextResource;
-                return updatedResources;
-              }
-              return [...currentResources, nextResource];
-            });
-          }
-
-          if (payload.eventType === "DELETE") {
-            setResources((currentResources) => currentResources.filter((resource) => resource.id !== payload.old.id));
-          }
-        },
-      )
-      .subscribe();
+    const upsertById = (items, next) => {
+      const index = items.findIndex((item) => item.id === next.id);
+      if (index < 0) return [...items, next];
+      const updated = [...items];
+      updated[index] = next;
+      return updated;
+    };
+    const channel = onUpserts(supabase.channel(`standard-work-board-live-${activeOrgId}`), "standard_work_tasks", orgFilter, (payload) => {
+      setTasks((currentTasks) => upsertById(currentTasks, normalizeTask(payload.new)));
+    });
+    onUpserts(channel, "standard_work_resources", orgFilter, (payload) => {
+      const nextResource = {
+        id: payload.new.id,
+        name: payload.new.name,
+        zone: payload.new.zone ?? "Operations",
+        status: payload.new.status ?? "Available",
+        role: payload.new.role ?? "",
+      };
+      setResources((currentResources) => upsertById(currentResources, nextResource));
+    });
+    channel.subscribe();
 
     return () => {
       supabase.removeChannel(channel);
+    };
+  }, [activeOrgId, demoAccess]);
+
+  useEffect(() => {
+    if (!hasSupabase || !supabase || demoAccess || !activeOrgId) return undefined;
+
+    let channel;
+    let cancelled = false;
+    const start = async () => {
+      await supabase.realtime.setAuth();
+      if (cancelled) return;
+      channel = supabase
+        .channel(`org-deletes:${activeOrgId}`, { config: { private: true } })
+        .on("broadcast", { event: "delete" }, ({ payload }) => {
+          const { table, id } = payload || {};
+          if (table === "standard_work_tasks") setTasks((current) => current.filter((task) => task.id !== id));
+          if (table === "standard_work_resources") setResources((current) => current.filter((resource) => resource.id !== id));
+          if (table === "team_members") {
+            setTeamMembers((current) => current.filter((member) => member.id !== id));
+            setTeamAbsences((current) => current.filter((absence) => absence.member_id !== id));
+          }
+          if (table === "team_absences") setTeamAbsences((current) => current.filter((absence) => absence.id !== id));
+        })
+        .subscribe();
+    };
+    start();
+
+    return () => {
+      cancelled = true;
+      if (channel) supabase.removeChannel(channel);
     };
   }, [activeOrgId, demoAccess]);
 
@@ -918,6 +928,36 @@ export default function StandardWorkBoard() {
       label: `${toDateLabel(dateValue(kpiStart), "short")} – ${toDateLabel(dateValue(kpiEnd), "short")}`,
     };
   }, [kpiPreset, kpiStart, kpiEnd]);
+
+  // Only the last 3 months load up front; older activity is fetched when a view or KPI range reaches back that far.
+  useEffect(() => {
+    if (!hasSupabase || !supabase || demoAccess || !activeOrgId || !loadedFrom) return undefined;
+    const earliestView = rangeDates[0]?.getTime() ?? Infinity;
+    const needed = new Date(Math.min(earliestView, kpiRange.start.getTime()));
+    needed.setHours(0, 0, 0, 0);
+    needed.setDate(needed.getDate() - 1);
+    if (needed.getTime() >= new Date(loadedFrom).getTime()) return undefined;
+
+    let cancelled = false;
+    const orgId = activeOrgId;
+    const previousFrom = loadedFrom;
+    (async () => {
+      try {
+        const rows = await fetchTasksPaged(orgId, needed.toISOString(), previousFrom);
+        if (cancelled) return;
+        setTasks((current) => {
+          const known = new Set(current.map((task) => task.id));
+          return [...current, ...rows.filter((row) => !known.has(row.id)).map(normalizeTask)];
+        });
+        setLoadedFrom(needed.toISOString());
+      } catch (error) {
+        if (!cancelled) setSyncMessage("Could not load older activity. Check your connection and try again.");
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [rangeDates, kpiRange, loadedFrom, activeOrgId, demoAccess]);
 
   const rangeLabel = useMemo(() => {
     if (viewMode === "day") return toDateLabel(dateValue(selectedDate), "full");
@@ -1305,9 +1345,19 @@ export default function StandardWorkBoard() {
     }
   };
 
-  const handleExportCsv = () => {
+  const handleExportCsv = async () => {
     const headers = ["id", "resourceId", "title", "type", "person", "start", "end", "status", "note", "issueReason", "issueActivity", "delayMinutes", "completed_at", "completed_by", "updated_at", "updated_by"];
-    const rows = tasks.map((task) => headers.map((header) => {
+    let exportTasks = tasks;
+    if (hasSupabase && supabase && !demoAccess && activeOrgId) {
+      try {
+        exportTasks = (await fetchTasksPaged(activeOrgId)).map(normalizeTask);
+      } catch (error) {
+        setNotice("Could not fetch the full history for export. Check your connection and try again.");
+        setTimeout(() => setNotice(""), 2500);
+        return;
+      }
+    }
+    const rows = exportTasks.map((task) => headers.map((header) => {
       const value = task[header] ?? "";
       const escaped = String(value).replace(/"/g, '""');
       return `"${escaped}"`;
@@ -2120,7 +2170,7 @@ export default function StandardWorkBoard() {
           return;
         }
         if (existing.name !== name) {
-          await supabase.from("tasks").update({ person: name }).eq("org_id", activeOrgId).eq("person", existing.name);
+          await supabase.from("standard_work_tasks").update({ person: name }).eq("org_id", activeOrgId).eq("person", existing.name);
         }
       }
       if (existing.name !== name) {
