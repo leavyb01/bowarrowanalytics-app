@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertTriangle,
   BedDouble,
@@ -308,6 +308,19 @@ export default function StandardWorkBoard() {
   const [reviewYear, setReviewYear] = useState(new Date().getFullYear());
   const [reviewMemberId, setReviewMemberId] = useState("all");
   const [isPlatformAdmin, setIsPlatformAdmin] = useState(false);
+  const [confirmDialog, setConfirmDialog] = useState(null);
+  const confirmResolver = useRef(null);
+
+  const askConfirm = (options) => new Promise((resolve) => {
+    confirmResolver.current = resolve;
+    setConfirmDialog(options);
+  });
+
+  const answerConfirm = (answer) => {
+    confirmResolver.current?.(answer);
+    confirmResolver.current = null;
+    setConfirmDialog(null);
+  };
   const [teamStart, setTeamStart] = useState(() => formatDateISO(new Date()));
   const [showIssue, setShowIssue] = useState(false);
   const [currentPage, setCurrentPage] = useState("board");
@@ -1635,8 +1648,13 @@ export default function StandardWorkBoard() {
     if (assignee) {
       const startKey = form.start.slice(0, 10);
       const absence = absenceFor(assignee.id, startKey);
-      if (absence && !window.confirm(`${assignee.name} is marked as ${absenceTypes[absence.type]?.label.toLowerCase() || "away"} on ${startKey}. Assign this activity anyway?`)) {
-        return;
+      if (absence) {
+        const proceed = await askConfirm({
+          title: "Person is away",
+          message: `${assignee.name} is marked as ${absenceTypes[absence.type]?.label.toLowerCase() || "away"} on ${startKey}. Assign this activity anyway?`,
+          confirmLabel: "Assign anyway",
+        });
+        if (!proceed) return;
       }
     }
 
@@ -2124,7 +2142,13 @@ export default function StandardWorkBoard() {
   };
 
   const deleteTeamMember = async (member) => {
-    if (!window.confirm(`Remove ${member.name} from the team? Their absences will also be removed.`)) return;
+    const confirmed = await askConfirm({
+      title: "Remove team member",
+      message: `Remove ${member.name} from the team? Their holidays and absences will also be removed.`,
+      confirmLabel: "Remove",
+      danger: true,
+    });
+    if (!confirmed) return;
     if (!useLocalTeam) {
       const { error } = await supabase.from("team_members").delete().eq("id", member.id).eq("org_id", activeOrgId);
       if (error) {
@@ -2175,7 +2199,13 @@ export default function StandardWorkBoard() {
     const label = absenceTypes[absence.type]?.label || "absence";
     const part = absence.day_part && absence.day_part !== "full" ? ` (${dayPartLabels[absence.day_part].toLowerCase()})` : "";
     const dates = absence.start_date === absence.end_date ? absence.start_date : `${absence.start_date} to ${absence.end_date}`;
-    if (!window.confirm(`Remove ${person}'s ${label.toLowerCase()} on ${dates}${part}?`)) return;
+    const confirmed = await askConfirm({
+      title: `Remove ${label.toLowerCase()}`,
+      message: `Remove ${person}'s ${label.toLowerCase()} on ${dates}${part}?`,
+      confirmLabel: "Remove",
+      danger: true,
+    });
+    if (!confirmed) return;
     if (!useLocalTeam) {
       const { error } = await supabase.from("team_absences").delete().eq("id", absence.id).eq("org_id", activeOrgId);
       if (error) {
@@ -3602,6 +3632,18 @@ export default function StandardWorkBoard() {
       </main>
 
       {notice && <div className="fixed bottom-5 right-5 rounded-xl bg-slate-900 px-4 py-3 text-sm text-white shadow-xl">{notice}</div>}
+      {confirmDialog && (
+        <div className="fixed inset-0 z-[100] grid place-items-center bg-slate-900/50 p-4" onClick={() => answerConfirm(false)}>
+          <div role="alertdialog" aria-modal="true" className="w-full max-w-md rounded-2xl bg-white p-6 shadow-2xl" onClick={(event) => event.stopPropagation()}>
+            <h3 className="text-lg font-semibold text-slate-900">{confirmDialog.title}</h3>
+            <p className="mt-2 text-sm text-slate-600">{confirmDialog.message}</p>
+            <div className="mt-6 flex justify-end gap-2">
+              <button type="button" autoFocus onClick={() => answerConfirm(false)} className="rounded-xl border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50">Cancel</button>
+              <button type="button" onClick={() => answerConfirm(true)} className={`rounded-xl px-4 py-2 text-sm font-semibold text-white ${confirmDialog.danger ? "bg-rose-600 hover:bg-rose-700" : "bg-[#103c2d] hover:bg-emerald-900"}`}>{confirmDialog.confirmLabel || "Confirm"}</button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {pendingMove && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/40 p-4" onClick={() => setPendingMove(null)}>
